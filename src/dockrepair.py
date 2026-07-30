@@ -49,12 +49,15 @@ def dependency_facts(environment: Environment, service_name: str) -> set[str]:
     return required
 
 
-def build_actions(environment: Environment) -> tuple[Action, ...]:
-    """Create only actions relevant to the state we observed."""
+def build_actions(
+    environment: Environment,
+    excluded_actions: frozenset[str] = frozenset(),
+) -> tuple[Action, ...]:
+    """Create relevant alternatives, minus actions that failed during execution."""
 
     state = environment.facts
     if not environment.daemon_reachable:
-        return (
+        actions = (
             Action(
                 name="Start Docker Engine",
                 command="Start the local Docker Engine using the supported platform launcher",
@@ -65,6 +68,7 @@ def build_actions(environment: Environment) -> tuple[Action, ...]:
                 manual=False,
             ),
         )
+        return tuple(action for action in actions if action.name not in excluded_actions)
 
     actions = []
 
@@ -93,7 +97,51 @@ def build_actions(environment: Environment) -> tuple[Action, ...]:
             )
         )
 
-    for service in sorted(environment.services.values(), key=lambda item: item.name):
+    services = sorted(environment.services.values(), key=lambda item: item.name)
+
+    # Compose can reconcile several broken services and their dependency order in
+    # one process. This creates a genuine alternative path through the graph:
+    # one batch edge versus several lower-blast-radius service edges.
+    batch_services = []
+    for service in services:
+        name = service.name
+        if any(
+            fact(kind, name) not in state
+            for kind in ("container_exists", "config_current", "running")
+        ):
+            batch_services.append(service)
+
+    if len(batch_services) >= 2:
+        additions = set()
+        removals = set()
+        names = tuple(service.name for service in batch_services)
+        for service in batch_services:
+            additions.update(
+                {
+                    fact("container_exists", service.name),
+                    fact("config_current", service.name),
+                    fact("running", service.name),
+                }
+            )
+            if service.needs_healthcheck:
+                # `up --wait` observes health before it returns successfully.
+                additions.add(fact("healthy", service.name))
+            removals.update(
+                {
+                    fact("health_pending", service.name),
+                    fact("unhealthy", service.name),
+                }
+            )
+        add_action(
+            "Reconcile services together: " + ", ".join(names),
+            ("up", "-d", "--wait", *names),
+            2 + len(names),
+            {"daemon_reachable", "compose_valid"},
+            additions,
+            removals,
+        )
+
+    for service in services:
         name = service.name
         basic = {"daemon_reachable", "compose_valid"}
         dependencies = dependency_facts(environment, name)
@@ -131,6 +179,14 @@ def build_actions(environment: Environment) -> tuple[Action, ...]:
                 additions,
                 {healthy, unhealthy},
             )
+            add_action(
+                f"Recreate {name}",
+                ("up", "-d", "--force-recreate", "--no-deps", name),
+                8,
+                basic | dependencies | {exists, current},
+                transition,
+                {healthy, unhealthy},
+            )
         elif unhealthy in state:
             add_action(
                 f"Restart {name}",
@@ -138,6 +194,14 @@ def build_actions(environment: Environment) -> tuple[Action, ...]:
                 3,
                 basic | dependencies | {exists, current, running, unhealthy},
                 {running, pending},
+                {healthy, unhealthy},
+            )
+            add_action(
+                f"Recreate {name}",
+                ("up", "-d", "--force-recreate", "--no-deps", name),
+                8,
+                basic | dependencies | {exists, current, running},
+                {running, pending} if service.needs_healthcheck else {running},
                 {healthy, unhealthy},
             )
 
@@ -152,10 +216,13 @@ def build_actions(environment: Environment) -> tuple[Action, ...]:
                 manual=True,
             )
 
-    return tuple(actions)
+    return tuple(action for action in actions if action.name not in excluded_actions)
 
 
-def search(environment: Environment) -> tuple[Plan, frozenset[str]]:
+def search(
+    environment: Environment,
+    excluded_actions: frozenset[str] = frozenset(),
+) -> tuple[Plan, frozenset[str]]:
     """Find the lowest-cost path through the symbolic state graph."""
 
     goal = build_goal(environment)
@@ -177,7 +244,7 @@ def search(environment: Environment) -> tuple[Plan, frozenset[str]]:
     # This is graph search, not a decision tree: different action sequences can
     # reach the same state. best_cost prevents exploring a worse duplicate.
     best_cost = {initial: 0}
-    actions = build_actions(environment)
+    actions = build_actions(environment, excluded_actions)
     explored = 0
 
     while frontier and explored < 2_000:
@@ -318,6 +385,7 @@ def execute_action(
     environment: Environment,
     action: Action,
     timeout: float,
+    health_timeout: float,
 ) -> tuple[bool, str, Environment]:
     """Execute one planned action and return a freshly observed environment."""
 
@@ -327,8 +395,12 @@ def execute_action(
 
     health_facts = frozenset(item for item in action.adds if item.startswith("healthy:"))
     if action.manual and health_facts:
-        succeeded, observed = _wait_for_facts(environment.compose_file, health_facts, timeout)
-        message = "Health check passed." if succeeded else f"Health did not converge within {timeout:g} seconds."
+        succeeded, observed = _wait_for_facts(environment.compose_file, health_facts, health_timeout)
+        message = (
+            "Health check passed."
+            if succeeded
+            else f"Health did not converge within {health_timeout:g} seconds."
+        )
         return succeeded, message, observed
 
     try:
@@ -347,17 +419,69 @@ def execute_action(
 
     output = (result.stdout if result.returncode == 0 else result.stderr).strip()
     observed = collect_environment(environment.compose_file)
+    pending_services = {
+        item.split(":", 1)[1]
+        for item in action.adds
+        if item.startswith("health_pending:")
+    }
+    unhealthy_services = {
+        name for name in pending_services if fact("unhealthy", name) in observed.facts
+    }
+    if result.returncode == 0 and unhealthy_services:
+        wanted = frozenset(fact("healthy", name) for name in unhealthy_services)
+        converged, observed = _wait_for_facts(environment.compose_file, wanted, health_timeout)
+        if not converged:
+            note = f"Health did not converge within {health_timeout:g} seconds."
+            output = f"{output}\n{note}".strip()
+            return False, output, observed
     return result.returncode == 0, output, observed
 
 
-def execute_until_resolved(compose_file: str, timeout: float, max_actions: int) -> int:
-    """Inspect, execute one action, and replan until the observed goal is met."""
+def _action_services(action: Action) -> frozenset[str]:
+    """Return services whose runtime state an action predicts it will change."""
+
+    kinds = {"container_exists", "config_current", "running", "health_pending", "healthy"}
+    return frozenset(
+        name
+        for item in action.adds
+        if ":" in item
+        for kind, name in (item.split(":", 1),)
+        if kind in kinds
+    )
+
+
+def _effect_was_observed(action: Action, environment: Environment) -> bool:
+    """Check predicted core effects while accepting any terminal health state."""
+
+    for expected in action.adds:
+        if expected.startswith("health_pending:"):
+            name = expected.split(":", 1)[1]
+            if not any(
+                fact(kind, name) in environment.facts
+                for kind in ("health_pending", "healthy")
+            ):
+                return False
+        elif expected not in environment.facts:
+            return False
+    return True
+
+
+def execute_until_resolved(
+    compose_file: str,
+    timeout: float,
+    max_actions: int,
+    health_timeout: float = 30.0,
+) -> int:
+    """Execute, verify, remove failed graph edges, and search for another path."""
 
     started = time.perf_counter()
     environment = collect_environment(compose_file)
+    excluded_actions: set[str] = set()
+    ineffective_attempts: dict[str, int] = {}
+    last_mutation_by_service: dict[str, str] = {}
 
     for step in range(1, max_actions + 1):
-        plan, goal = search(environment)
+        plan, goal = search(environment, frozenset(excluded_actions))
         if goal <= environment.facts:
             elapsed = time.perf_counter() - started
             print(f"Resolved and verified in {elapsed:.3f} seconds after {step - 1} action(s).")
@@ -371,12 +495,46 @@ def execute_until_resolved(compose_file: str, timeout: float, max_actions: int) 
         action = plan.actions[0]
         print(f"{step}. Executing: {action.name}")
         print(f"   {action.command}")
-        succeeded, output, environment = execute_action(environment, action, timeout)
+        succeeded, output, environment = execute_action(
+            environment,
+            action,
+            timeout,
+            health_timeout,
+        )
         if output:
             print(f"   {output}")
+
+        services = _action_services(action)
+        if succeeded and not action.manual:
+            for service in services:
+                last_mutation_by_service[service] = action.name
+
+            if not _effect_was_observed(action, environment):
+                attempts = ineffective_attempts.get(action.name, 0) + 1
+                ineffective_attempts[action.name] = attempts
+                print(f"   Predicted effects were not observed (attempt {attempts}/2).")
+                if attempts >= 2:
+                    excluded_actions.add(action.name)
+                    print(f"   Removing failed graph edge: {action.name}")
+
         if not succeeded:
-            print("Repair stopped because the action did not succeed.")
-            return 2
+            if action.manual:
+                predecessors = {
+                    last_mutation_by_service[service]
+                    for service in services
+                    if service in last_mutation_by_service
+                }
+                excluded_actions.update(predecessors)
+                if predecessors:
+                    print("   Verification rejected: " + ", ".join(sorted(predecessors)))
+            else:
+                excluded_actions.add(action.name)
+            print("   Action failed; replanning without the rejected graph edge.")
+            continue
+
+        if action.manual:
+            for service in services:
+                last_mutation_by_service.pop(service, None)
 
     print(f"Repair stopped after the safety limit of {max_actions} actions.")
     return 2
@@ -398,11 +556,22 @@ def main() -> int:
         default=180.0,
         help="Seconds allowed for each command, engine startup, or health wait (default: 180).",
     )
+    parser.add_argument(
+        "--health-timeout",
+        type=float,
+        default=30.0,
+        help="Seconds allowed for a health transition before trying an alternative (default: 30).",
+    )
     parser.add_argument("--max-actions", type=int, default=20)
     args = parser.parse_args()
 
     if args.execute:
-        return execute_until_resolved(args.compose_file, args.action_timeout, args.max_actions)
+        return execute_until_resolved(
+            args.compose_file,
+            args.action_timeout,
+            args.max_actions,
+            args.health_timeout,
+        )
 
     environment = collect_environment(args.compose_file)
     plan, goal = search(environment)

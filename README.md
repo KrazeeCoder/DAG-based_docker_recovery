@@ -16,9 +16,16 @@ and actions are edges. A `heapq` priority queue always selects the cheapest
 unfinished node, while a dictionary prevents a more expensive path from
 revisiting an equivalent state.
 
-The model intentionally stays small. Missing or configuration-stale services
-use one `docker compose up` reconciliation action; Compose itself handles image
-pulling, building, and container creation.
+The model intentionally stays small, but it now contains competing repair paths:
+
+- Reconcile several broken services together, or repair them individually in
+  dependency order.
+- Restart an unhealthy container, or force-recreate it at higher cost.
+- Retry a start whose predicted effect was not observed, then reject that edge.
+
+During execution, command failure or bounded health-verification failure removes
+the rejected edge. The environment is collected again and graph search finds the
+cheapest remaining path instead of aborting the entire repair.
 
 ## Run it
 
@@ -34,18 +41,35 @@ $env:PYTHONPATH = "src"
 py -3.11 -m dockrepair -f .\live_fixture\compose.yaml --execute
 ```
 
+Use a shorter health fallback window when testing alternative paths:
+
+```powershell
+py -3.11 -m dockrepair -f .\live_fixture\compose.yaml --execute --health-timeout 5
+```
+
 The included live fixture has two services. `app` depends on a healthy
-`prerequisite`. They are currently stopped, so the expected plan is:
+`prerequisite`. When both are stopped, the lower-cost batch edge is:
 
 ```text
-1. Start prerequisite
-2. Verify prerequisite health
-3. Start app
+1. Reconcile services together: app, prerequisite
 ```
 
 Action effects remain planner predictions. In execution mode the tool runs one
 action, inspects Docker, and replans from the observed state. Health-check actions
 poll live container state instead of assuming that a printed check succeeded.
+
+## Cases where graph search matters
+
+The batch and individual paths reach the same healthy facts through different
+states and costs. If batch Compose reconciliation fails, execution removes that
+edge and the planner can use dependency-aware starts. Likewise, restart is the
+preferred low-disruption path for an unhealthy service; if health does not
+converge, forced recreation becomes the cheapest remaining path.
+
+Live fault-injection fixtures are in `benchmarks/fixtures/flaky_start` and
+`benchmarks/fixtures/recreate_fallback`. The first rejects batch reconciliation;
+the second makes restart preserve container-local corruption while recreation
+clears it.
 
 ## Recreate the broken fixture
 

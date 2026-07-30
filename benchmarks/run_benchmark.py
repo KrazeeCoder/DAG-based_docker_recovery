@@ -112,6 +112,19 @@ def setup_unhealthy(scenario: Scenario) -> None:
     wait_for_fact(scenario.compose_file, "unhealthy:cache", timeout=15)
 
 
+def setup_recreate_fallback(scenario: Scenario) -> None:
+    clean_project(scenario.compose_file)
+    compose(scenario.compose_file, "up", "-d", "--wait", "--wait-timeout", "30", quiet=True)
+    container_id = compose(scenario.compose_file, "ps", "-q", "cache", quiet=True).stdout.strip()
+    if not container_id:
+        raise RuntimeError("Could not find the cache container to corrupt.")
+    run(
+        ["docker", "exec", container_id, "sh", "-c", "touch /tmp/corrupt; rm -f /tmp/healthy"],
+        quiet=True,
+    )
+    wait_for_fact(scenario.compose_file, "unhealthy:cache", timeout=15)
+
+
 def setup_flaky_start(scenario: Scenario) -> None:
     clean_project(scenario.compose_file)
     compose(scenario.compose_file, "create", quiet=True)
@@ -148,6 +161,12 @@ SCENARIOS = {
         "A running dependency is unhealthy and restart repairs it; generic Compose up often leaves it unhealthy.",
         FIXTURES / "unhealthy" / "compose.yaml",
         setup_unhealthy,
+    ),
+    "recreate-fallback": Scenario(
+        "recreate-fallback",
+        "Restart cannot clear container-local corruption, but forced recreation can; proves alternative-path fallback.",
+        FIXTURES / "recreate_fallback" / "compose.yaml",
+        setup_recreate_fallback,
     ),
     "flaky-start": Scenario(
         "flaky-start",

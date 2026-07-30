@@ -52,7 +52,8 @@ py -3.11 .\benchmarks\run_benchmark.py abort
 py -3.11 .\benchmarks\run_benchmark.py cleanup
 ```
 
-`unhealthy` and `flaky-start` are the key adaptive cases. The first requires a
-restart rather than a normal start/reconcile operation. The second deliberately
-violates the predicted effect of the first start, so a successful repair must
-inspect and replan.
+`unhealthy`, `recreate-fallback`, and `flaky-start` are the key adaptive cases.
+`recreate-fallback` makes the cheaper restart path fail verification so graph
+search must remove that edge and select forced recreation. `flaky-start` makes
+the cheapest batch edge fail, after which the planner uses dependency-aware
+individual actions.
