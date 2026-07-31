@@ -1,52 +1,35 @@
 """Read Docker state. Proposed repair commands are never executed here."""
 
-from __future__ import annotations
-
 import json
 import os
 import re
 import shlex
 import subprocess
 from pathlib import Path
-from typing import Any
 
 from dockrepair_data import Environment, Service
 
 
-def compose_command(environment: Environment, *arguments: str) -> str:
-    """Build a printable command string, not an executable process."""
-
+def compose_command(environment, *arguments):
     parts = compose_arguments(environment, *arguments)
     return subprocess.list2cmdline(parts) if os.name == "nt" else shlex.join(parts)
 
 
-def compose_arguments(environment: Environment, *arguments: str) -> tuple[str, ...]:
-    """Build a shell-free argument list for an executable Compose action."""
-
+def compose_arguments(environment, *arguments):
     return ("docker", "compose", "-f", environment.compose_file, "-p", environment.project_name, *arguments)
 
 
-def _run(arguments: list[str], cwd: Path) -> tuple[bool, str]:
-    """Run one of the fixed read-only commands used by collect_environment."""
-
+def _run(arguments, cwd):
+    # Keep all read-only Docker subprocess handling in one place.
     try:
-        result = subprocess.run(
-            arguments,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=30,
-            shell=False,
-        )
+        result = subprocess.run(arguments, cwd=cwd, capture_output=True, text=True, timeout=30)
         output = result.stdout.strip() if result.returncode == 0 else result.stderr.strip()
         return result.returncode == 0, output
     except (FileNotFoundError, subprocess.TimeoutExpired) as error:
         return False, str(error)
 
 
-def _service_hashes(text: str) -> dict[str, str]:
+def _service_hashes(text):
     return {
         parts[0]: parts[-1]
         for line in text.splitlines()
@@ -54,73 +37,63 @@ def _service_hashes(text: str) -> dict[str, str]:
     }
 
 
-def _dependencies(service: dict[str, Any]) -> tuple[tuple[str, str], ...]:
-    dependencies = []
-    raw_dependencies = service.get("depends_on", {})
-    if not isinstance(raw_dependencies, dict):
-        return ()
-    for name, settings in raw_dependencies.items():
-        condition = settings.get("condition", "service_started") if isinstance(settings, dict) else "service_started"
-        required = settings.get("required", True) if isinstance(settings, dict) else True
-        if required:
-            dependencies.append((str(name), str(condition)))
-    return tuple(sorted(dependencies))
+def _dependencies(service):
+    return tuple(sorted(
+        (name, settings.get("condition", "service_started"))
+        for name, settings in service.get("depends_on", {}).items()
+        if settings.get("required", True)
+    ))
 
 
-def _needs_healthcheck(service: dict[str, Any]) -> bool:
+def _needs_healthcheck(service):
     healthcheck = service.get("healthcheck")
-    if not isinstance(healthcheck, dict) or healthcheck.get("disable") is True:
+    if not healthcheck or healthcheck.get("disable"):
         return False
     return healthcheck.get("test") not in (None, "NONE", ["NONE"])
 
 
-def _project_fallback(path: Path) -> str:
+def _project_fallback(path):
     name = re.sub(r"[^a-z0-9_-]+", "-", path.parent.name.lower()).strip("-_")
     return name or "dockrepair"
 
 
-def collect_environment(compose_file: str) -> Environment:
-    """Take one compact snapshot using only read-only Docker commands."""
-
+def collect_environment(compose_file):
+    # Phase 1: resolve and validate the requested Compose file.
     path = Path(compose_file).expanduser().resolve()
     fallback = _project_fallback(path)
     if not path.is_file():
-        return Environment(str(path), fallback, {}, frozenset(), False, ("Compose file does not exist.",))
+        return Environment(str(path), fallback, {}, frozenset(), ("Compose file does not exist.",))
 
     cwd = path.parent
     compose = ["docker", "compose", "-f", str(path)]
 
+    # Phase 2: ask Compose for its normalized services and dependencies.
     config_ok, config_text = _run([*compose, "config", "--format", "json"], cwd)
     if not config_ok:
-        return Environment(str(path), fallback, {}, frozenset(), False, (config_text,))
+        return Environment(str(path), fallback, {}, frozenset(), (config_text,))
 
     try:
         config = json.loads(config_text)
     except json.JSONDecodeError as error:
-        return Environment(str(path), fallback, {}, frozenset(), False, (f"Invalid Compose JSON: {error}",))
+        return Environment(str(path), fallback, {}, frozenset(), (f"Invalid Compose JSON: {error}",))
 
     project_name = str(config.get("name") or fallback)
     hashes_ok, hashes_text = _run([*compose, "config", "--hash", "*"], cwd)
     hashes = _service_hashes(hashes_text) if hashes_ok else {}
 
-    services = {}
-    for name, raw_service in sorted(config.get("services", {}).items()):
-        service = raw_service if isinstance(raw_service, dict) else {}
-        services[name] = Service(
-            name=name,
-            needs_healthcheck=_needs_healthcheck(service),
-            config_hash=hashes.get(name),
-            dependencies=_dependencies(service),
-        )
+    services = {
+        name: Service(_needs_healthcheck(service), hashes.get(name), _dependencies(service))
+        for name, service in sorted(config.get("services", {}).items())
+    }
 
+    # Phase 3: turn live Docker state into facts understood by the planner.
     facts = {"compose_valid"}
     errors = []
     daemon_ok, daemon_error = _run(["docker", "info", "--format", "{{.ServerVersion}}"], cwd)
     if not daemon_ok:
-        return Environment(str(path), project_name, services, frozenset(facts), False, (daemon_error,))
+        return Environment(str(path), project_name, services, frozenset(facts), (daemon_error,))
     facts.add("daemon_reachable")
 
-    # Ask Compose only for IDs, then inspect every container in one batch.
     ids_ok, ids_text = _run([*compose, "ps", "--all", "--quiet"], cwd)
     container_ids = ids_text.splitlines() if ids_ok and ids_text else []
     containers = []
@@ -131,7 +104,7 @@ def collect_environment(compose_file: str) -> Environment:
         else:
             errors.append(inspect_text)
 
-    # Map each inspected container back to its Compose service label.
+    # Compose labels connect inspected containers back to service names.
     container_by_service = {}
     for container in containers:
         labels = container.get("Config", {}).get("Labels") or {}
@@ -139,10 +112,10 @@ def collect_environment(compose_file: str) -> Environment:
         if service_name:
             container_by_service[service_name] = container
 
+    # Record existence, config, running, and health facts for each service.
     for name, service in services.items():
         container = container_by_service.get(name)
-        exists = container is not None
-        if not exists:
+        if not container:
             continue
 
         facts.add(f"container_exists:{name}")
@@ -164,4 +137,4 @@ def collect_environment(compose_file: str) -> Environment:
         elif running and service.needs_healthcheck:
             facts.add(f"health_pending:{name}")
 
-    return Environment(str(path), project_name, services, frozenset(facts), True, tuple(errors))
+    return Environment(str(path), project_name, services, frozenset(facts), tuple(errors))

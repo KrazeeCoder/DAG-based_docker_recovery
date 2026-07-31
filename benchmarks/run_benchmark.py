@@ -25,8 +25,9 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 sys.path.insert(0, str(SRC))
 
-from dockrepair import _start_docker_engine, build_goal, execute_until_resolved  # noqa: E402
+from dockrepair import Limits, _start_docker_engine, execute_until_resolved  # noqa: E402
 from dockrepair_docker import collect_environment  # noqa: E402
+from dockrepair_planner import build_goal  # noqa: E402
 
 
 BENCHMARK_DIR = Path(__file__).resolve().parent
@@ -44,7 +45,7 @@ class Scenario:
     extra_files: tuple[Path, ...] = ()
 
 
-def run(arguments: list[str], *, check: bool = True, quiet: bool = False) -> subprocess.CompletedProcess[str]:
+def run(arguments, *, check=True, quiet=False):
     result = subprocess.run(
         arguments,
         cwd=ROOT,
@@ -61,15 +62,15 @@ def run(arguments: list[str], *, check: bool = True, quiet: bool = False) -> sub
     return result
 
 
-def compose(path: Path, *arguments: str, check: bool = True, quiet: bool = False) -> subprocess.CompletedProcess[str]:
+def compose(path, *arguments, check=True, quiet=False):
     return run(["docker", "compose", "-f", str(path), *arguments], check=check, quiet=quiet)
 
 
-def clean_project(path: Path) -> None:
+def clean_project(path):
     compose(path, "down", "--remove-orphans", check=False, quiet=True)
 
 
-def ensure_daemon() -> None:
+def ensure_daemon():
     """Make fixture setup possible without charging engine startup to either trial."""
 
     ready, message = _start_docker_engine(timeout=180.0)
@@ -77,32 +78,32 @@ def ensure_daemon() -> None:
         raise RuntimeError(message)
 
 
-def setup_stopped_chain(scenario: Scenario) -> None:
+def setup_stopped_chain(scenario):
     clean_project(scenario.compose_file)
     compose(scenario.compose_file, "up", "-d", "--wait", "--wait-timeout", "30", quiet=True)
     compose(scenario.compose_file, "stop", "worker", "api", "database", quiet=True)
 
 
-def setup_partial_stop(scenario: Scenario) -> None:
+def setup_partial_stop(scenario):
     clean_project(scenario.compose_file)
     compose(scenario.compose_file, "up", "-d", "--wait", "--wait-timeout", "30", quiet=True)
     compose(scenario.compose_file, "stop", "worker4", quiet=True)
 
 
-def setup_missing_service(scenario: Scenario) -> None:
+def setup_missing_service(scenario):
     clean_project(scenario.compose_file)
     compose(scenario.compose_file, "up", "-d", "--wait", "--wait-timeout", "30", quiet=True)
     compose(scenario.compose_file, "rm", "-s", "-f", "worker", quiet=True)
 
 
-def setup_config_drift(scenario: Scenario) -> None:
+def setup_config_drift(scenario):
     old_file = scenario.extra_files[0]
     clean_project(scenario.compose_file)
     clean_project(old_file)
     compose(old_file, "up", "-d", "--wait", "--wait-timeout", "30", quiet=True)
 
 
-def setup_unhealthy(scenario: Scenario) -> None:
+def setup_unhealthy(scenario):
     clean_project(scenario.compose_file)
     compose(scenario.compose_file, "up", "-d", "--wait", "--wait-timeout", "30", quiet=True)
     container_id = compose(scenario.compose_file, "ps", "-q", "cache", quiet=True).stdout.strip()
@@ -112,7 +113,7 @@ def setup_unhealthy(scenario: Scenario) -> None:
     wait_for_fact(scenario.compose_file, "unhealthy:cache", timeout=15)
 
 
-def setup_recreate_fallback(scenario: Scenario) -> None:
+def setup_recreate_fallback(scenario):
     clean_project(scenario.compose_file)
     compose(scenario.compose_file, "up", "-d", "--wait", "--wait-timeout", "30", quiet=True)
     container_id = compose(scenario.compose_file, "ps", "-q", "cache", quiet=True).stdout.strip()
@@ -125,7 +126,7 @@ def setup_recreate_fallback(scenario: Scenario) -> None:
     wait_for_fact(scenario.compose_file, "unhealthy:cache", timeout=15)
 
 
-def setup_flaky_start(scenario: Scenario) -> None:
+def setup_flaky_start(scenario):
     clean_project(scenario.compose_file)
     compose(scenario.compose_file, "create", quiet=True)
 
@@ -177,28 +178,28 @@ SCENARIOS = {
 }
 
 
-def utc_now() -> datetime:
+def utc_now():
     return datetime.now(timezone.utc)
 
 
-def read_json(path: Path, default: object) -> object:
+def read_json(path, default):
     if not path.is_file():
         return default
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def write_json(path: Path, value: object) -> None:
+def write_json(path, value):
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
     os.replace(temporary, path)
 
 
-def file_hashes(scenario: Scenario) -> dict[str, str]:
+def file_hashes(scenario):
     paths = (scenario.compose_file, *scenario.extra_files)
     return {str(path.resolve()): hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}
 
 
-def assert_files_unchanged(expected: dict[str, str]) -> None:
+def assert_files_unchanged(expected):
     actual = {
         name: hashlib.sha256(Path(name).read_bytes()).hexdigest()
         for name in expected
@@ -208,13 +209,13 @@ def assert_files_unchanged(expected: dict[str, str]) -> None:
         raise RuntimeError("A benchmark Compose file changed during the repair; the trial is invalid.")
 
 
-def inspect_goal(path: Path) -> tuple[bool, list[str], tuple[str, ...]]:
+def inspect_goal(path):
     environment = collect_environment(str(path))
     missing = sorted(build_goal(environment) - environment.facts)
     return not missing, missing, environment.errors
 
 
-def wait_for_fact(path: Path, wanted: str, timeout: float) -> None:
+def wait_for_fact(path, wanted, timeout):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if wanted in collect_environment(str(path)).facts:
@@ -223,35 +224,35 @@ def wait_for_fact(path: Path, wanted: str, timeout: float) -> None:
     raise RuntimeError(f"Setup did not produce the expected fact within {timeout:g}s: {wanted}")
 
 
-def assert_broken(scenario: Scenario) -> list[str]:
+def assert_broken(scenario):
     healthy, missing, _ = inspect_goal(scenario.compose_file)
     if healthy:
         raise RuntimeError(f"Setup error: {scenario.name} is already healthy.")
     return missing
 
 
-def load_state() -> dict[str, object]:
+def load_state():
     return read_json(STATE_FILE, {})  # type: ignore[return-value]
 
 
-def save_state(state: dict[str, object]) -> None:
+def save_state(state):
     write_json(STATE_FILE, state)
 
 
-def require_scenario(name: str | None) -> Scenario:
+def require_scenario(name):
     if not name or name not in SCENARIOS:
         choices = ", ".join(SCENARIOS)
         raise RuntimeError(f"Choose a scenario with --scenario. Available: {choices}")
     return SCENARIOS[name]
 
 
-def cmd_list() -> int:
+def cmd_list():
     for scenario in SCENARIOS.values():
         print(f"{scenario.name:16} {scenario.description}")
     return 0
 
 
-def cmd_prepare_llm(scenario: Scenario) -> int:
+def cmd_prepare_llm(scenario):
     state = load_state()
     if state and state.get("phase") not in {"complete", "aborted"}:
         raise RuntimeError(
@@ -279,7 +280,7 @@ def cmd_prepare_llm(scenario: Scenario) -> int:
     return 0
 
 
-def cmd_finish_llm(scenario: Scenario) -> int:
+def cmd_finish_llm(scenario):
     state = load_state()
     if state.get("scenario") != scenario.name or state.get("phase") != "llm_running":
         raise RuntimeError(f"No active LLM timer exists for {scenario.name}.")
@@ -301,7 +302,7 @@ def cmd_finish_llm(scenario: Scenario) -> int:
     return 0
 
 
-def cmd_run_app(scenario: Scenario) -> int:
+def cmd_run_app(scenario):
     state = load_state()
     if state.get("scenario") != scenario.name or state.get("phase") != "llm_complete":
         raise RuntimeError("The LLM trial must complete successfully before the app trial.")
@@ -319,7 +320,7 @@ def cmd_run_app(scenario: Scenario) -> int:
     return 0 if state["app_success"] else 2
 
 
-def run_app_trial(scenario: Scenario) -> dict[str, object]:
+def run_app_trial(scenario):
     """Recreate one broken fixture, time the app, and independently verify it."""
 
     print("Recreating the identical broken environment (not timed)...")
@@ -329,7 +330,7 @@ def run_app_trial(scenario: Scenario) -> dict[str, object]:
     print("Missing goal facts: " + ", ".join(missing))
 
     started = time.perf_counter()
-    return_code = execute_until_resolved(str(scenario.compose_file), timeout=180.0, max_actions=20)
+    return_code = execute_until_resolved(str(scenario.compose_file), Limits())
     elapsed = time.perf_counter() - started
     healthy, final_missing, errors = inspect_goal(scenario.compose_file)
     success = return_code == 0 and healthy
@@ -348,7 +349,7 @@ def run_app_trial(scenario: Scenario) -> dict[str, object]:
     }
 
 
-def cmd_run_app_first(scenario: Scenario) -> int:
+def cmd_run_app_first(scenario):
     state = load_state()
     if state and state.get("phase") not in {"complete", "aborted"}:
         raise RuntimeError(
@@ -369,7 +370,7 @@ def cmd_run_app_first(scenario: Scenario) -> int:
     return 0 if state["app_success"] else 2
 
 
-def cmd_prepare_llm_after_app(scenario: Scenario) -> int:
+def cmd_prepare_llm_after_app(scenario):
     state = load_state()
     if state.get("scenario") != scenario.name or state.get("phase") != "app_complete":
         raise RuntimeError("The app-first trial must complete before preparing the LLM trial.")
@@ -394,7 +395,7 @@ def cmd_prepare_llm_after_app(scenario: Scenario) -> int:
     return 0
 
 
-def cmd_finish_llm_after_app(scenario: Scenario) -> int:
+def cmd_finish_llm_after_app(scenario):
     state = load_state()
     if state.get("scenario") != scenario.name or state.get("phase") != "llm_running_after_app":
         raise RuntimeError(f"No app-first LLM timer exists for {scenario.name}.")
@@ -426,7 +427,7 @@ def cmd_finish_llm_after_app(scenario: Scenario) -> int:
     return 0
 
 
-def cmd_status() -> int:
+def cmd_status():
     state = load_state()
     if not state:
         print("No benchmark trial is active.")
@@ -435,7 +436,7 @@ def cmd_status() -> int:
     return 0
 
 
-def cmd_results() -> int:
+def cmd_results():
     results = read_json(RESULTS_FILE, {"runs": []})
     runs = results.get("runs", [])  # type: ignore[union-attr]
     if not runs:
@@ -451,7 +452,7 @@ def cmd_results() -> int:
     return 0
 
 
-def cmd_abort() -> int:
+def cmd_abort():
     state = load_state()
     if state:
         state["phase"] = "aborted"
@@ -460,9 +461,9 @@ def cmd_abort() -> int:
     return 0
 
 
-def cmd_cleanup() -> int:
+def cmd_cleanup():
     ensure_daemon()
-    seen: set[Path] = set()
+    seen = set()
     for scenario in SCENARIOS.values():
         for path in (scenario.compose_file, *scenario.extra_files):
             if path not in seen:
@@ -472,7 +473,7 @@ def cmd_cleanup() -> int:
     return 0
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "command",
@@ -494,7 +495,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> int:
+def main():
     args = parse_args()
     try:
         if args.command == "list":

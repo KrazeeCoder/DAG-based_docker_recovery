@@ -1,20 +1,18 @@
-from __future__ import annotations
-
 import unittest
 
-from dockrepair import _effect_was_observed, search
+from dockrepair import _effect_was_observed
 from dockrepair_data import Action, Environment, Service
+from dockrepair_planner import search
 
 
 BASE = frozenset({"compose_valid", "daemon_reachable"})
 
 
 class AlternativePathTests(unittest.TestCase):
-    def test_persistently_unhealthy_is_not_a_successful_transition(self) -> None:
+    def test_persistently_unhealthy_is_not_a_successful_transition(self):
         action = Action(
             "Restart cache",
-            "docker compose restart cache",
-            ("docker", "compose", "restart", "cache"),
+            ("restart", "cache"),
             3,
             frozenset(),
             frozenset({"running:cache", "health_pending:cache"}),
@@ -22,25 +20,24 @@ class AlternativePathTests(unittest.TestCase):
         environment = Environment(
             "compose.yaml",
             "test",
-            {"cache": Service("cache", True, "cache")},
+            {"cache": Service(True, "cache")},
             BASE | frozenset({"running:cache", "unhealthy:cache"}),
-            True,
         )
 
         self.assertFalse(_effect_was_observed(action, environment))
 
-    def test_batch_edge_beats_sequential_dependency_path(self) -> None:
+    def test_batch_edge_beats_sequential_dependency_path(self):
         services = {
-            "database": Service("database", True, "db"),
-            "api": Service("api", True, "api", (("database", "service_healthy"),)),
-            "worker": Service("worker", False, "worker", (("api", "service_healthy"),)),
+            "database": Service(True, "db"),
+            "api": Service(True, "api", (("database", "service_healthy"),)),
+            "worker": Service(False, "worker", (("api", "service_healthy"),)),
         }
         stopped_facts = BASE | frozenset(
             fact
             for name in services
             for fact in (f"container_exists:{name}", f"config_current:{name}")
         )
-        environment = Environment("compose.yaml", "test", services, stopped_facts, True)
+        environment = Environment("compose.yaml", "test", services, stopped_facts)
 
         plan, _ = search(environment)
 
@@ -50,18 +47,18 @@ class AlternativePathTests(unittest.TestCase):
         )
         self.assertEqual(plan.total_cost, 5)
 
-    def test_rejected_batch_edge_falls_back_to_dependency_order(self) -> None:
+    def test_rejected_batch_edge_falls_back_to_dependency_order(self):
         services = {
-            "database": Service("database", True, "db"),
-            "api": Service("api", True, "api", (("database", "service_healthy"),)),
-            "worker": Service("worker", False, "worker", (("api", "service_healthy"),)),
+            "database": Service(True, "db"),
+            "api": Service(True, "api", (("database", "service_healthy"),)),
+            "worker": Service(False, "worker", (("api", "service_healthy"),)),
         }
         stopped_facts = BASE | frozenset(
             fact
             for name in services
             for fact in (f"container_exists:{name}", f"config_current:{name}")
         )
-        environment = Environment("compose.yaml", "test", services, stopped_facts, True)
+        environment = Environment("compose.yaml", "test", services, stopped_facts)
 
         plan, _ = search(
             environment,
@@ -79,8 +76,8 @@ class AlternativePathTests(unittest.TestCase):
             ],
         )
 
-    def test_restart_is_cheaper_than_recreation(self) -> None:
-        services = {"cache": Service("cache", True, "cache")}
+    def test_restart_is_cheaper_than_recreation(self):
+        services = {"cache": Service(True, "cache")}
         environment = Environment(
             "compose.yaml",
             "test",
@@ -94,7 +91,6 @@ class AlternativePathTests(unittest.TestCase):
                     "unhealthy:cache",
                 }
             ),
-            True,
         )
 
         cheap_plan, _ = search(environment)

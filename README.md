@@ -9,19 +9,30 @@ finishes only when the goal is observed in the live environment.
 
 - `src/dockrepair_data.py` contains the data classes.
 - `src/dockrepair_docker.py` contains every Docker and Compose inspection call.
-- `src/dockrepair.py` contains goals, actions, search, and command-line output.
+- `src/dockrepair_planner.py` contains goals, actions, and graph search.
+- `src/dockrepair.py` contains execution and command-line output.
 
-The planner uses uniform-cost **graph search**. Symbolic states are graph nodes
-and actions are edges. A `heapq` priority queue always selects the cheapest
-unfinished node, while a dictionary prevents a more expensive path from
-revisiting an equivalent state.
+The planner uses uniform-cost search over an add-only state graph. Each action
+adds facts, so the graph is a DAG. A `heapq` selects the cheapest unfinished
+state and a dictionary skips more expensive duplicates.
+
+To follow the main control flow, start at `main()` near the bottom of
+`src/dockrepair.py`. Planning mode follows this path:
+
+```text
+main() -> collect_environment() -> search() -> print_plan()
+```
+
+Execution mode calls `execute_until_resolved()`, which repeatedly runs
+`search()`, executes only the first planned action, inspects Docker again, and
+replans from the newly observed state.
 
 The model intentionally stays small, but it now contains competing repair paths:
 
 - Reconcile several broken services together, or repair them individually in
   dependency order.
 - Restart an unhealthy container, or force-recreate it at higher cost.
-- Retry a start whose predicted effect was not observed, then reject that edge.
+- Reject an action when its predicted effect is not observed, then replan.
 
 During execution, command failure or bounded health-verification failure removes
 the rejected edge. The environment is collected again and graph search finds the
