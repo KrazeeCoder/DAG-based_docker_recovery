@@ -186,6 +186,7 @@ def collect_environment(compose_file):
     project_name = str(config.get("name") or fallback)
     hashes_ok, hashes_text = _run([*compose, "config", "--hash", "*"], cwd)
     hashes = _service_hashes(hashes_text) if hashes_ok else {}
+    hash_error = None if hashes_ok else hashes_text
     networks = _resources(config, "networks", project_name)
     volumes = _resources(config, "volumes", project_name)
     services = {
@@ -201,7 +202,7 @@ def collect_environment(compose_file):
     }
 
     facts = {"compose_valid"}
-    errors = []
+    errors = [hash_error] if hash_error else []
     blocked = []
     daemon_ok, daemon_error = _run(["docker", "info", "--format", "{{.ServerVersion}}"], cwd)
     if not daemon_ok:
@@ -315,7 +316,9 @@ def collect_environment(compose_file):
         )
 
         facts.add(f"container_exists:{name}")
-        if not service.config_hash or containers[name].config_hash == service.config_hash:
+        if hash_error is None and (
+            not service.config_hash or containers[name].config_hash == service.config_hash
+        ):
             facts.add(f"config_current:{name}")
         if containers[name].running:
             facts.add(f"running:{name}")

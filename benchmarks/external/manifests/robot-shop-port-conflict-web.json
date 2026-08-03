@@ -1,0 +1,9 @@
+{
+  "id": "robot-shop-port-conflict-web",
+  "application": "robot-shop",
+  "compose_file": "benchmarks/external/robot-shop/docker-compose.yaml",
+  "fault": "port_conflict",
+  "port": 8080,
+  "protocol": "tcp",
+  "expected_repairable": false
+}

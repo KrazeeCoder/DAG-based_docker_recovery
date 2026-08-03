@@ -178,7 +178,7 @@ def _effect_was_observed(action, environment):
     return True
 
 
-def execute_until_resolved(compose_file, limits=Limits()):
+def execute_until_resolved(compose_file, limits=Limits(),search_fn=search):
     # This is the main repair loop: plan, run one action, inspect, and replan.
     started = time.perf_counter()
     environment = collect_environment(compose_file)
@@ -186,7 +186,7 @@ def execute_until_resolved(compose_file, limits=Limits()):
     previous_mutation = None
 
     for step in range(1, limits.max_actions + 1):
-        plan, goal = search(environment, frozenset(excluded))
+        plan, goal = search_fn(environment, frozenset(excluded))
         if goal <= environment.facts:
             elapsed = time.perf_counter() - started
             print(f"Resolved and verified in {elapsed:.3f} seconds after {step - 1} action(s).")

@@ -3,7 +3,9 @@
 The LLM is intentionally outside this process: prepare-llm starts its wall-clock
 timer, the LLM executes real repair commands, and finish-llm stops the timer only
 after Docker inspection proves the goal. run-app then recreates the exact failure
-and measures dockrepair's executor in-process.
+and measures dockrepair's dependency-aware executor in-process. run-naive does
+the same for the non-dependency-aware baseline planner, so every scenario gets
+three paired trials: LLM, naive planner, dependency-aware planner.
 """
 
 from __future__ import annotations
@@ -27,13 +29,17 @@ sys.path.insert(0, str(SRC))
 
 from dockrepair import Limits, _start_docker_engine, execute_until_resolved  # noqa: E402
 from dockrepair_docker import collect_environment  # noqa: E402
-from dockrepair_planner import build_goal  # noqa: E402
+from dockrepair_planner import build_goal, search  # noqa: E402
+from dockrepair_planner_naive import search_naive  # noqa: E402
 
 
 BENCHMARK_DIR = Path(__file__).resolve().parent
 FIXTURES = BENCHMARK_DIR / "fixtures"
 STATE_FILE = BENCHMARK_DIR / ".benchmark-state.json"
 RESULTS_FILE = BENCHMARK_DIR / "results.json"
+
+# Every completed trial records one timing/success entry per arm, keyed here.
+ARMS = ("llm", "naive", "app")
 
 
 @dataclass(frozen=True)
@@ -71,7 +77,7 @@ def clean_project(path):
 
 
 def ensure_daemon():
-    """Make fixture setup possible without charging engine startup to either trial."""
+    """Make fixture setup possible without charging engine startup to any arm."""
 
     ready, message = _start_docker_engine(timeout=180.0)
     if not ready:
@@ -261,7 +267,12 @@ def cmd_prepare_llm(scenario):
 
     ensure_daemon()
     scenario.setup(scenario)
-    missing = assert_broken(scenario)
+    # NOTE: we intentionally do NOT call assert_broken/print the missing-facts
+    # list here. Doing so before the timer starts would hand the LLM a free,
+    # pre-computed diagnosis that neither planner arm receives -- the app and
+    # naive arms have to discover "what's wrong" via their own
+    # collect_environment() call *inside* their timed window. Fairness means
+    # the LLM should have to inspect Docker itself too.
     started = utc_now()
     state = {
         "scenario": scenario.name,
@@ -274,8 +285,7 @@ def cmd_prepare_llm(scenario):
 
     print(f"LLM timer started at {started.isoformat()}")
     print(f"Compose file: {scenario.compose_file.resolve()}")
-    print("Missing goal facts: " + ", ".join(missing))
-    print("Repair this environment by actually executing Docker commands.")
+    print("Repair this environment by actually inspecting Docker and executing repair commands.")
     print(f"When it is resolved, run: py -3.11 {Path(__file__).resolve()} finish-llm --scenario {scenario.name}")
     return 0
 
@@ -298,133 +308,78 @@ def cmd_finish_llm(scenario):
     state.update({"phase": "llm_complete", "llm_seconds": round(elapsed, 3), "llm_success": True})
     save_state(state)
     print(f"LLM repair resolved and verified in {elapsed:.3f} seconds.")
-    print(f"Next: py -3.11 {Path(__file__).resolve()} run-app --scenario {scenario.name}")
+    print(f"Next: py -3.11 {Path(__file__).resolve()} run-naive --scenario {scenario.name}")
     return 0
 
 
-def cmd_run_app(scenario):
-    state = load_state()
-    if state.get("scenario") != scenario.name or state.get("phase") != "llm_complete":
-        raise RuntimeError("The LLM trial must complete successfully before the app trial.")
-    assert_files_unchanged(state["file_hashes"])  # type: ignore[arg-type]
+def run_planner_trial(scenario, search_fn, label):
+    """Recreate one broken fixture, time a planner arm, and independently verify it."""
 
-    state.update(run_app_trial(scenario))
-    state["phase"] = "complete"
-    state["completed_utc"] = utc_now().isoformat()
-    results = read_json(RESULTS_FILE, {"runs": []})
-    results["runs"].append(state.copy())  # type: ignore[index]
-    write_json(RESULTS_FILE, results)
-    save_state(state)
-
-    print(f"Results saved to {RESULTS_FILE}")
-    return 0 if state["app_success"] else 2
-
-
-def run_app_trial(scenario):
-    """Recreate one broken fixture, time the app, and independently verify it."""
-
-    print("Recreating the identical broken environment (not timed)...")
+    print(f"Recreating the identical broken environment for {label} (not timed)...")
     ensure_daemon()
     scenario.setup(scenario)
     missing = assert_broken(scenario)
     print("Missing goal facts: " + ", ".join(missing))
 
     started = time.perf_counter()
-    return_code = execute_until_resolved(str(scenario.compose_file), Limits())
+    return_code = execute_until_resolved(str(scenario.compose_file), Limits(), search_fn=search_fn)
     elapsed = time.perf_counter() - started
     healthy, final_missing, errors = inspect_goal(scenario.compose_file)
     success = return_code == 0 and healthy
 
     if success:
-        print(f"App repair resolved and independently verified in {elapsed:.3f} seconds.")
+        print(f"{label} repair resolved and independently verified in {elapsed:.3f} seconds.")
     else:
-        print(f"App repair failed after {elapsed:.3f} seconds.")
+        print(f"{label} repair failed after {elapsed:.3f} seconds.")
         print("Missing goal facts: " + ", ".join(final_missing))
         if errors:
             print("Inspection errors: " + "; ".join(errors))
     return {
-        "app_seconds": round(elapsed, 3),
-        "app_success": success,
-        "app_return_code": return_code,
+        "seconds": round(elapsed, 3),
+        "success": success,
+        "return_code": return_code,
     }
 
 
-def cmd_run_app_first(scenario):
+def cmd_run_naive(scenario):
     state = load_state()
-    if state and state.get("phase") not in {"complete", "aborted"}:
-        raise RuntimeError(
-            f"Finish or abort the active {state.get('scenario')} trial before starting another."
-        )
-
-    state = {
-        "scenario": scenario.name,
-        "order": "app-first",
-        "phase": "app_running",
-        "file_hashes": file_hashes(scenario),
-    }
-    save_state(state)
-    state.update(run_app_trial(scenario))
-    state["phase"] = "app_complete"
-    save_state(state)
-    print(f"Next: py -3.11 {Path(__file__).resolve()} prepare-llm-after-app --scenario {scenario.name}")
-    return 0 if state["app_success"] else 2
-
-
-def cmd_prepare_llm_after_app(scenario):
-    state = load_state()
-    if state.get("scenario") != scenario.name or state.get("phase") != "app_complete":
-        raise RuntimeError("The app-first trial must complete before preparing the LLM trial.")
+    if state.get("scenario") != scenario.name or state.get("phase") != "llm_complete":
+        raise RuntimeError("The LLM trial must complete successfully before the naive-planner trial.")
     assert_files_unchanged(state["file_hashes"])  # type: ignore[arg-type]
 
-    print("Recreating the identical broken environment for the LLM (not timed)...")
-    ensure_daemon()
-    scenario.setup(scenario)
-    missing = assert_broken(scenario)
-    started = utc_now()
-    state.update({"phase": "llm_running_after_app", "started_utc": started.isoformat()})
+    result = run_planner_trial(scenario, search_naive, "Naive planner")
+    state.update({
+        "naive_seconds": result["seconds"],
+        "naive_success": result["success"],
+        "naive_return_code": result["return_code"],
+        "phase": "naive_complete",
+    })
     save_state(state)
-
-    print(f"LLM timer started at {started.isoformat()}")
-    print(f"Compose file: {scenario.compose_file.resolve()}")
-    print("Missing goal facts: " + ", ".join(missing))
-    print("Repair this environment by actually executing Docker commands.")
-    print(
-        f"When it is resolved, run: py -3.11 {Path(__file__).resolve()} "
-        f"finish-llm-after-app --scenario {scenario.name}"
-    )
-    return 0
+    print(f"Next: py -3.11 {Path(__file__).resolve()} run-app --scenario {scenario.name}")
+    return 0 if result["success"] else 2
 
 
-def cmd_finish_llm_after_app(scenario):
+def cmd_run_app(scenario):
     state = load_state()
-    if state.get("scenario") != scenario.name or state.get("phase") != "llm_running_after_app":
-        raise RuntimeError(f"No app-first LLM timer exists for {scenario.name}.")
+    if state.get("scenario") != scenario.name or state.get("phase") != "naive_complete":
+        raise RuntimeError("The naive-planner trial must complete successfully before the dependency-aware trial.")
     assert_files_unchanged(state["file_hashes"])  # type: ignore[arg-type]
-    healthy, missing, errors = inspect_goal(scenario.compose_file)
-    if not healthy:
-        print("The environment is not resolved; the LLM timer is still running.")
-        print("Missing goal facts: " + ", ".join(missing))
-        if errors:
-            print("Inspection errors: " + "; ".join(errors))
-        return 2
 
-    started = datetime.fromisoformat(str(state["started_utc"]))
-    elapsed = (utc_now() - started).total_seconds()
-    state.update(
-        {
-            "phase": "complete",
-            "llm_seconds": round(elapsed, 3),
-            "llm_success": True,
-            "completed_utc": utc_now().isoformat(),
-        }
-    )
+    result = run_planner_trial(scenario, search, "Dependency-aware planner")
+    state.update({
+        "app_seconds": result["seconds"],
+        "app_success": result["success"],
+        "app_return_code": result["return_code"],
+        "phase": "complete",
+        "completed_utc": utc_now().isoformat(),
+    })
     results = read_json(RESULTS_FILE, {"runs": []})
     results["runs"].append(state.copy())  # type: ignore[index]
     write_json(RESULTS_FILE, results)
     save_state(state)
-    print(f"LLM repair resolved and verified in {elapsed:.3f} seconds.")
+
     print(f"Results saved to {RESULTS_FILE}")
-    return 0
+    return 0 if state["app_success"] else 2
 
 
 def cmd_status():
@@ -442,13 +397,20 @@ def cmd_results():
     if not runs:
         print("No completed paired trials yet.")
         return 0
-    print(f"{'order':10} {'scenario':16} {'LLM seconds':>12} {'app seconds':>12} {'app vs LLM':>12}")
+    print(
+        f"{'scenario':16} {'LLM s':>10} {'naive s':>10} {'planner s':>10} "
+        f"{'naive ok':>9} {'planner ok':>11}"
+    )
     for item in runs:
         llm = float(item["llm_seconds"])
+        naive = float(item.get("naive_seconds", float("nan")))
         app = float(item["app_seconds"])
-        ratio = app / llm if llm else float("inf")
-        order = item.get("order", "llm-first")
-        print(f"{order:10} {item['scenario']:16} {llm:12.3f} {app:12.3f} {ratio:11.2f}x")
+        naive_ok = "yes" if item.get("naive_success") else "no"
+        app_ok = "yes" if item.get("app_success") else "no"
+        print(
+            f"{item['scenario']:16} {llm:10.3f} {naive:10.3f} {app:10.3f} "
+            f"{naive_ok:>9} {app_ok:>11}"
+        )
     return 0
 
 
@@ -481,10 +443,8 @@ def parse_args():
             "list",
             "prepare-llm",
             "finish-llm",
+            "run-naive",
             "run-app",
-            "run-app-first",
-            "prepare-llm-after-app",
-            "finish-llm-after-app",
             "status",
             "results",
             "abort",
@@ -514,13 +474,9 @@ def main():
             return cmd_prepare_llm(scenario)
         if args.command == "finish-llm":
             return cmd_finish_llm(scenario)
-        if args.command == "run-app":
-            return cmd_run_app(scenario)
-        if args.command == "run-app-first":
-            return cmd_run_app_first(scenario)
-        if args.command == "prepare-llm-after-app":
-            return cmd_prepare_llm_after_app(scenario)
-        return cmd_finish_llm_after_app(scenario)
+        if args.command == "run-naive":
+            return cmd_run_naive(scenario)
+        return cmd_run_app(scenario)
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
