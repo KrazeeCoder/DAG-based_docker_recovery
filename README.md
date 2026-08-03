@@ -12,9 +12,12 @@ finishes only when the goal is observed in the live environment.
 - `src/dockrepair_planner.py` contains goals, actions, and graph search.
 - `src/dockrepair.py` contains execution and command-line output.
 
-The planner uses uniform-cost search over an add-only state graph. Each action
-adds facts, so the graph is a DAG. A `heapq` selects the cheapest unfinished
-state and a dictionary skips more expensive duplicates.
+The collector reads normalized Compose configuration plus live containers,
+networks, volumes, mounts, ports, health, and runtime status. It converts that
+snapshot into symbolic facts. The planner uses uniform-cost search over a finite
+state-transition graph whose parameterized actions can add and remove facts. A
+`heapq` selects the cheapest unfinished state and a dictionary prevents costly
+cycles and duplicate paths.
 
 To follow the main control flow, start at `main()` near the bottom of
 `src/dockrepair.py`. Planning mode follows this path:
@@ -27,16 +30,20 @@ Execution mode calls `execute_until_resolved()`, which repeatedly runs
 `search()`, executes only the first planned action, inspects Docker again, and
 replans from the newly observed state.
 
-The model intentionally stays small, but it now contains competing repair paths:
+The action catalog contains competing repair paths:
 
 - Reconcile several broken services together, or repair them individually in
   dependency order.
 - Restart an unhealthy container, or force-recreate it at higher cost.
+- Create missing project networks or named volumes and restore attachments.
+- Refuse repairs blocked by missing bind paths, external resources, or foreign
+  port conflicts.
 - Reject an action when its predicted effect is not observed, then replan.
 
 During execution, command failure or bounded health-verification failure removes
-the rejected edge. The environment is collected again and graph search finds the
-cheapest remaining path instead of aborting the entire repair.
+that action edge for the exact observed state. The environment is collected
+again and graph search finds the cheapest remaining path instead of aborting the
+entire repair.
 
 ## Run it
 

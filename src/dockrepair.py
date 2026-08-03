@@ -25,8 +25,10 @@ class Limits:
 
 
 def _command(environment, action):
-    if not action.arguments:
+    if action.executor == "engine":
         return "Start the local Docker Engine"
+    if action.executor == "docker":
+        return subprocess.list2cmdline(("docker", *action.arguments))
     return compose_command(environment, *action.arguments)
 
 
@@ -37,6 +39,8 @@ def print_plan(environment, plan, goal):
     print("Missing goal facts: " + (", ".join(sorted(goal - environment.facts)) or "none"))
     if environment.errors:
         print("Collection notes: " + "; ".join(environment.errors))
+    if environment.blocked_reasons:
+        print("Blocked by: " + "; ".join(environment.blocked_reasons))
 
     print("\nProposed commands (nothing was executed):")
     if not plan.actions:
@@ -109,7 +113,7 @@ def _wait_for_facts(compose_file, wanted, timeout):
 
 def execute_action(environment, action, limits=Limits()):
     # Engine startup is represented as an action without Compose arguments.
-    if "daemon_reachable" in action.adds and not action.arguments:
+    if action.executor == "engine":
         succeeded, message = _start_docker_engine(limits.action_timeout)
         return succeeded, message, collect_environment(environment.compose_file)
 
@@ -122,8 +126,13 @@ def execute_action(environment, action, limits=Limits()):
 
     # Normal actions become real `docker compose` subprocesses here.
     try:
+        arguments = (
+            ("docker", *action.arguments)
+            if action.executor == "docker"
+            else compose_arguments(environment, *action.arguments)
+        )
         result = subprocess.run(
-            compose_arguments(environment, *action.arguments),
+            arguments,
             cwd=Path(environment.compose_file).parent,
             capture_output=True, text=True, timeout=limits.action_timeout,
         )
@@ -157,6 +166,15 @@ def _effect_was_observed(action, environment):
                 return False
         elif expected not in environment.facts:
             return False
+    for removed in action.removes - action.adds:
+        # A mutation may move through health-pending and become healthy before
+        # the post-command inspection observes it.
+        if removed.startswith("healthy:"):
+            name = removed.split(":", 1)[1]
+            if fact("health_pending", name) in action.adds:
+                continue
+        if removed in environment.facts:
+            return False
     return True
 
 
@@ -177,27 +195,31 @@ def execute_until_resolved(compose_file, limits=Limits()):
             print(f"Repair stopped: {plan.message}")
             if environment.errors:
                 print("Collection notes: " + "; ".join(environment.errors))
+            if environment.blocked_reasons:
+                print("Blocked by: " + "; ".join(environment.blocked_reasons))
             return 2
 
         # Run only the first edge because the observed state may then change.
         action = plan.actions[0]
+        action_state = environment.facts
         print(f"{step}. Executing: {action.name}\n   {_command(environment, action)}")
         succeeded, output, environment = execute_action(environment, action, limits)
         if output:
             print(f"   {output}")
 
         if succeeded and not action.manual:
-            previous_mutation = action.name
+            previous_mutation = (action_state, action.key)
             if not _effect_was_observed(action, environment):
                 succeeded = False
                 print("   Predicted effects were not observed.")
 
         # Failed edges are excluded so search can choose a fallback path.
         if not succeeded:
-            rejected = previous_mutation if action.manual else action.name
+            rejected = previous_mutation if action.manual else (action_state, action.key)
             if rejected:
                 excluded.add(rejected)
-                print(f"   Removing failed graph edge: {rejected}")
+                rejected_name = previous_mutation[1] if action.manual and previous_mutation else action.key
+                print(f"   Removing failed graph edge: {':'.join(rejected_name)}")
             print("   Action failed; replanning.")
         elif action.manual:
             previous_mutation = None
