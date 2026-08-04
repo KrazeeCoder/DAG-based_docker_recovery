@@ -4,10 +4,25 @@ import json
 import os
 import re
 import shlex
+import socket
+import ssl
 import subprocess
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
-from dockrepair_data import Container, Environment, Mount, Port, Resource, Service
+from dockrepair_data import (
+    Container,
+    Environment,
+    Mount,
+    Port,
+    PublishedPort,
+    ReadinessProbe,
+    Resource,
+    Service,
+    normalize_host_ip,
+)
 
 
 def compose_command(environment, *arguments):
@@ -73,6 +88,64 @@ def _ports(service):
     return tuple(result)
 
 
+def _labels(service):
+    labels = service.get("labels") or {}
+    if isinstance(labels, dict):
+        return {str(key): str(value) for key, value in labels.items()}
+    result = {}
+    for label in labels:
+        key, separator, value = str(label).partition("=")
+        result[key] = value if separator else ""
+    return result
+
+
+def _readiness(service):
+    labels = _labels(service)
+    extension = service.get("x-dockrepair-readiness") or {}
+    if isinstance(extension, str):
+        extension = {"url": extension}
+    url = str(extension.get("url") or labels.get("com.dockrepair.readiness.url") or "").strip()
+    if not url:
+        return None
+
+    raw_statuses = extension.get("statuses", labels.get("com.dockrepair.readiness.statuses", "200-399"))
+    statuses = set()
+    values = raw_statuses if isinstance(raw_statuses, list) else str(raw_statuses).split(",")
+    for value in values:
+        text = str(value).strip()
+        if not text:
+            continue
+        try:
+            if "-" in text:
+                start, end = (int(part.strip()) for part in text.split("-", 1))
+                if 100 <= start <= end <= 599:
+                    statuses.update(range(start, end + 1))
+            else:
+                status = int(text)
+                if 100 <= status <= 599:
+                    statuses.add(status)
+        except ValueError:
+            continue
+    if not statuses:
+        statuses.update(range(200, 400))
+
+    raw_timeout = extension.get("timeout", labels.get("com.dockrepair.readiness.timeout", 2))
+    try:
+        timeout = max(0.1, float(raw_timeout))
+    except (TypeError, ValueError):
+        timeout = 2.0
+    return ReadinessProbe(url, frozenset(statuses), timeout)
+
+
+def _bind_source_exists(source):
+    if Path(source).expanduser().exists():
+        return True
+    # Docker Desktop resolves Linux-absolute bind sources inside its Linux VM.
+    # Testing those paths with the Windows client filesystem incorrectly marks
+    # standard mounts such as /proc, /sys, and /var/run as missing.
+    return os.name == "nt" and source.startswith("/")
+
+
 def _mounts(service):
     result = []
     for value in service.get("volumes") or ():
@@ -80,7 +153,7 @@ def _mounts(service):
             continue
         kind = str(value.get("type") or "volume")
         source = str(value.get("source") or "")
-        exists = kind != "bind" or Path(source).expanduser().exists()
+        exists = kind != "bind" or _bind_source_exists(source)
         result.append(Mount(source, str(value["target"]), kind, bool(value.get("read_only")), exists))
     return tuple(result)
 
@@ -138,11 +211,86 @@ def _existing_resources(resources, kind, cwd, errors):
 def _published_ports(container):
     result = set()
     for container_port, bindings in ((container.get("NetworkSettings") or {}).get("Ports") or {}).items():
-        protocol = container_port.rsplit("/", 1)[-1]
+        target_text, _, protocol = container_port.partition("/")
+        try:
+            target = int(target_text)
+        except ValueError:
+            continue
         for binding in bindings or ():
             if binding.get("HostPort"):
-                result.add(f"{binding.get('HostIp') or '*'}:{binding['HostPort']}/{protocol}")
+                try:
+                    published = int(binding["HostPort"])
+                except (TypeError, ValueError):
+                    continue
+                result.add(PublishedPort(target, published, protocol or "tcp", binding.get("HostIp") or ""))
     return frozenset(result)
+
+
+def _ip_family(host):
+    host = normalize_host_ip(host)
+    if host == "*":
+        return None
+    return socket.AF_INET6 if ":" in host else socket.AF_INET
+
+
+def _host_scopes_conflict(first, second):
+    first = normalize_host_ip(first)
+    second = normalize_host_ip(second)
+    if "*" in (first, second) or first == second:
+        return True
+    if first == "0.0.0.0":
+        return _ip_family(second) == socket.AF_INET
+    if second == "0.0.0.0":
+        return _ip_family(first) == socket.AF_INET
+    # Conservatively treat the IPv6 wildcard as dual-stack. Whether the host
+    # permits a parallel IPv4 bind is platform-dependent.
+    if "::" in (first, second):
+        return True
+    return False
+
+
+def _bindings_conflict(desired, actual):
+    return (
+        desired.published == actual.published
+        and desired.protocol.lower() == actual.protocol.lower()
+        and _host_scopes_conflict(desired.host_ip, actual.host_ip)
+    )
+
+
+def _port_matches(desired, actual):
+    desired_host = normalize_host_ip(desired.host_ip)
+    actual_host = normalize_host_ip(actual.host_ip)
+    host_matches = (
+        actual_host in {"*", "0.0.0.0", "::"}
+        if desired_host == "*"
+        else desired_host == actual_host
+    )
+    return (
+        desired.target == actual.target
+        and desired.published == actual.published
+        and desired.protocol.lower() == actual.protocol.lower()
+        and host_matches
+    )
+
+
+def _probe_readiness(probe):
+    parsed = urllib.parse.urlsplit(probe.url)
+    try:
+        if parsed.scheme == "tcp":
+            if not parsed.hostname or parsed.port is None:
+                return False
+            with socket.create_connection((parsed.hostname, parsed.port), timeout=probe.timeout):
+                return True
+        if parsed.scheme not in {"http", "https"}:
+            return False
+        request = urllib.request.Request(probe.url, headers={"User-Agent": "dockrepair/0.1"})
+        context = ssl._create_unverified_context() if parsed.scheme == "https" else None
+        with urllib.request.urlopen(request, timeout=probe.timeout, context=context) as response:
+            return response.status in probe.statuses
+    except urllib.error.HTTPError as error:
+        return error.code in probe.statuses
+    except (OSError, ValueError, urllib.error.URLError):
+        return False
 
 
 def _health(container):
@@ -197,6 +345,7 @@ def collect_environment(compose_file):
             _logical_networks(service, networks),
             _mounts(service),
             _ports(service),
+            _readiness(service),
         )
         for name, service in sorted((config.get("services") or {}).items())
     }
@@ -247,15 +396,11 @@ def collect_environment(compose_file):
     if not all_ok:
         errors.append(all_error)
         all_running = []
-    occupied = {}
+    occupied = []
     for container in all_running:
         container_id = str(container.get("Id") or "")
         for binding in _published_ports(container):
-            try:
-                port_protocol = binding.rsplit(":", 1)[-1]
-            except ValueError:
-                continue
-            occupied.setdefault(port_protocol, set()).add(container_id)
+            occupied.append((binding, container_id))
 
     containers = {}
     conflicts = []
@@ -272,7 +417,11 @@ def collect_environment(compose_file):
         for port in service.ports:
             if port.published is None:
                 continue
-            occupied_by = occupied.get(f"{port.published}/{port.protocol}", set()) - ({container_id} if container_id else set())
+            occupied_by = {
+                owner
+                for binding, owner in occupied
+                if owner != container_id and _bindings_conflict(port, binding)
+            }
             if occupied_by:
                 conflict = f"port_conflict:{name}:{port.key}"
                 conflicts.append(conflict)
@@ -337,10 +486,13 @@ def collect_environment(compose_file):
         for target in attached_mounts:
             facts.add(f"mount_attached:{name}:{target}")
         for port in service.ports:
-            if port.published is None or any(
-                binding.endswith(f":{port.published}/{port.protocol}") for binding in published
-            ):
+            if port.published is None or any(_port_matches(port, binding) for binding in published):
                 facts.add(f"port_bound:{name}:{port.key}")
+        if containers[name].running and service.readiness:
+            if _probe_readiness(service.readiness):
+                facts.add(f"endpoint_ready:{name}")
+            else:
+                facts.add(f"readiness_pending:{name}")
 
     return Environment(
         str(path), project_name, services, frozenset(facts), tuple(dict.fromkeys(errors)),

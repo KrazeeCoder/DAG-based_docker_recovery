@@ -52,6 +52,8 @@ def _service_goal(name, service):
     for port in service.ports:
         if port.published is not None:
             goal.add(_port_fact("port_bound", name, port))
+    if service.readiness:
+        goal.add(fact("endpoint_ready", name))
     return frozenset(goal)
 
 
@@ -86,6 +88,9 @@ def _transition_effects(environment, name, service):
     removals = set(facts(name, "stopped", "unhealthy", "healthy", "health_pending", "oom_killed"))
     if service.needs_healthcheck:
         additions.add(fact("health_pending", name))
+    if service.readiness:
+        additions.add(fact("endpoint_ready", name))
+        removals.add(fact("readiness_pending", name))
     for network in service.networks:
         resource = (environment.networks or {}).get(network)
         if not resource or not resource.external:
@@ -179,11 +184,12 @@ def _batch_action(environment, state):
 
 
 def _service_actions(environment, name, service, state):
-    exists, current, running, healthy, pending, unhealthy, stopped = (
+    exists, current, running, healthy, pending, unhealthy, stopped, ready, readiness_pending = (
         fact(kind, name)
         for kind in (
             "container_exists", "config_current", "running", "healthy",
-            "health_pending", "unhealthy", "stopped",
+            "health_pending", "unhealthy", "stopped", "endpoint_ready",
+            "readiness_pending",
         )
     )
     required = _resource_requirements(environment, name, service)
@@ -216,6 +222,8 @@ def _service_actions(environment, name, service, state):
         additions = {running}
         if service.needs_healthcheck:
             additions.add(pending)
+        if service.readiness:
+            additions.add(ready)
         additions.update(
             _port_fact("port_bound", name, port)
             for port in service.ports if port.published is not None
@@ -233,6 +241,8 @@ def _service_actions(environment, name, service, state):
         ))
     elif unhealthy in state:
         additions = facts(name, "running", "health_pending")
+        if service.readiness:
+            additions |= {ready}
         actions.append(Action(
             f"Restart {name}", ("restart", name), 3,
             required | {exists, current, running, unhealthy}, additions,
@@ -258,12 +268,44 @@ def _service_actions(environment, name, service, state):
                 identity=("connect_network", name, network), executor="docker",
             ))
 
+        runtime_goal = _service_goal(name, service) - {ready}
+        if service.readiness and ready not in state and runtime_goal <= state:
+            restart_adds = {running, ready}
+            restart_removes = {readiness_pending, stopped}
+            if service.needs_healthcheck:
+                restart_adds.add(pending)
+                restart_removes.update({healthy, unhealthy})
+            actions.append(Action(
+                f"Restart {name} for readiness", ("restart", name), 4,
+                required | {exists, current, running}, frozenset(restart_adds),
+                removes=frozenset(restart_removes),
+                identity=("restart_readiness", name),
+            ))
+            actions.append(Action(
+                f"Recreate {name}", ("up", "-d", "--force-recreate", "--no-deps", name), 8,
+                required | {exists, current, running}, transition_adds,
+                removes=transition_removes, identity=("recreate", name),
+            ))
+
     if service.needs_healthcheck and healthy not in state and pending in state:
         actions.append(Action(
             f"Verify {name} health", ("ps", name), 1,
             BASE | {exists, current, running, pending}, frozenset({healthy}),
             manual=True, removes=frozenset({pending, unhealthy}),
             identity=("verify_health", name), executor="observe",
+        ))
+    if (
+        service.readiness
+        and ready not in state
+        and readiness_pending in state
+        and (_service_goal(name, service) - {ready}) <= state
+    ):
+        readiness_requires = required | (_service_goal(name, service) - {ready}) | {readiness_pending}
+        actions.append(Action(
+            f"Verify {name} readiness", (service.readiness.url,), 1,
+            readiness_requires, frozenset({ready}),
+            manual=True, removes=frozenset({readiness_pending}),
+            identity=("verify_readiness", name), executor="observe",
         ))
     return actions
 

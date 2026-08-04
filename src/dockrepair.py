@@ -29,6 +29,8 @@ def _command(environment, action):
         return "Start the local Docker Engine"
     if action.executor == "docker":
         return subprocess.list2cmdline(("docker", *action.arguments))
+    if action.executor == "observe" and action.key[:1] == ("verify_readiness",):
+        return f"probe {action.arguments[0]}"
     return compose_command(environment, *action.arguments)
 
 
@@ -117,11 +119,12 @@ def execute_action(environment, action, limits=Limits()):
         succeeded, message = _start_docker_engine(limits.action_timeout)
         return succeeded, message, collect_environment(environment.compose_file)
 
-    # A manual planner edge means observe health; it runs no mutating command.
+    # A manual planner edge observes health or readiness; it runs no mutation.
     if action.manual:
-        wanted = frozenset(item for item in action.adds if item.startswith("healthy:"))
+        wanted = action.adds
         succeeded, observed = _wait_for_facts(environment.compose_file, wanted, limits.health_timeout)
-        message = "Health check passed." if succeeded else f"Health did not converge within {limits.health_timeout:g} seconds."
+        subject = "Readiness" if any(item.startswith("endpoint_ready:") for item in wanted) else "Health"
+        message = f"{subject} check passed." if succeeded else f"{subject} did not converge within {limits.health_timeout:g} seconds."
         return succeeded, message, observed
 
     # Normal actions become real `docker compose` subprocesses here.
@@ -154,6 +157,16 @@ def execute_action(environment, action, limits=Limits()):
         if not converged:
             note = f"Health did not converge within {limits.health_timeout:g} seconds."
             return False, f"{output}\n{note}".strip(), observed
+    readiness = frozenset(
+        item for item in action.adds if item.startswith("endpoint_ready:")
+    )
+    if result.returncode == 0 and not readiness <= observed.facts:
+        converged, observed = _wait_for_facts(
+            environment.compose_file, readiness, limits.health_timeout,
+        )
+        if not converged:
+            note = f"Readiness did not converge within {limits.health_timeout:g} seconds."
+            return False, f"{output}\n{note}".strip(), observed
     return result.returncode == 0, output, observed
 
 
@@ -178,7 +191,7 @@ def _effect_was_observed(action, environment):
     return True
 
 
-def execute_until_resolved(compose_file, limits=Limits(),search_fn=search):
+def execute_until_resolved(compose_file, limits=Limits(), search_fn=search, event_sink=None):
     # This is the main repair loop: plan, run one action, inspect, and replan.
     started = time.perf_counter()
     environment = collect_environment(compose_file)
@@ -202,6 +215,11 @@ def execute_until_resolved(compose_file, limits=Limits(),search_fn=search):
         # Run only the first edge because the observed state may then change.
         action = plan.actions[0]
         action_state = environment.facts
+        if event_sink:
+            event_sink({
+                "type": "action_started", "step": step, "action": action.name,
+                "key": action.key, "manual": action.manual, "executor": action.executor,
+            })
         print(f"{step}. Executing: {action.name}\n   {_command(environment, action)}")
         succeeded, output, environment = execute_action(environment, action, limits)
         if output:
@@ -220,7 +238,11 @@ def execute_until_resolved(compose_file, limits=Limits(),search_fn=search):
                 excluded.add(rejected)
                 rejected_name = previous_mutation[1] if action.manual and previous_mutation else action.key
                 print(f"   Removing failed graph edge: {':'.join(rejected_name)}")
+            if action.manual and action.key[:1] == ("verify_readiness",):
+                excluded.add((action_state, action.key))
             print("   Action failed; replanning.")
+            if event_sink:
+                event_sink({"type": "action_failed", "step": step, "action": action.name, "key": action.key})
         elif action.manual:
             previous_mutation = None
 

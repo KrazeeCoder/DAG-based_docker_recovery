@@ -1,4 +1,22 @@
 from dataclasses import dataclass
+from ipaddress import ip_address
+
+
+def normalize_host_ip(value):
+    value = str(value or "").strip().strip("[]")
+    if not value:
+        return "*"
+    try:
+        return ip_address(value).compressed
+    except ValueError:
+        return value.lower()
+
+
+def port_binding_key(host_ip, published, protocol):
+    host = normalize_host_ip(host_ip)
+    if ":" in host:
+        host = f"[{host}]"
+    return f"{host}:{published}/{str(protocol).lower()}"
 
 
 @dataclass(frozen=True)
@@ -10,7 +28,26 @@ class Port:
 
     @property
     def key(self):
-        return f"{self.host_ip or '*'}:{self.published}/{self.protocol}"
+        return port_binding_key(self.host_ip, self.published, self.protocol)
+
+
+@dataclass(frozen=True)
+class PublishedPort:
+    target: int
+    published: int
+    protocol: str = "tcp"
+    host_ip: str = ""
+
+    @property
+    def key(self):
+        return port_binding_key(self.host_ip, self.published, self.protocol)
+
+
+@dataclass(frozen=True)
+class ReadinessProbe:
+    url: str
+    statuses: frozenset[int] = frozenset(range(200, 400))
+    timeout: float = 2.0
 
 
 @dataclass(frozen=True)
@@ -39,6 +76,7 @@ class Service:
     networks: tuple[str, ...] = ()
     mounts: tuple[Mount, ...] = ()
     ports: tuple[Port, ...] = ()
+    readiness: ReadinessProbe | None = None
 
 
 @dataclass(frozen=True)
@@ -56,7 +94,7 @@ class Container:
     config_hash: str | None
     networks: frozenset[str]
     mounts: frozenset[str]
-    published_ports: frozenset[str]
+    published_ports: frozenset[PublishedPort]
 
 
 @dataclass(frozen=True)

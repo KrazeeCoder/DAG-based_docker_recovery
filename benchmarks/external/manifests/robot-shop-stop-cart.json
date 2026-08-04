@@ -1,8 +1,0 @@
-{
-  "id": "robot-shop-stop-cart",
-  "application": "robot-shop",
-  "compose_file": "benchmarks/external/robot-shop/docker-compose.yaml",
-  "fault": "stopped_service",
-  "target": "cart",
-  "expected_repairable": true
-}

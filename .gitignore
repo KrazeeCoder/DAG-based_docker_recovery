@@ -1,7 +1,5 @@
 __pycache__/
 *.py[cod]
-.benchmark-state.json
-benchmarks/results.json
 .venv/
 *.egg-info/
 build/
