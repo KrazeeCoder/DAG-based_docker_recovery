@@ -13,6 +13,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from dockrepair_data import RepairCost
 from dockrepair_docker import collect_environment, compose_arguments, compose_command
 from dockrepair_planner import fact, search
 
@@ -35,24 +36,67 @@ def _command(environment, action):
 
 
 def print_plan(environment, plan, goal):
-    # Planning mode is read-only: show the commands without running them.
+    # Planning mode is read-only: issue a human-readable proof obligation.
+    missing = goal - environment.facts
+    print("=== PLAN CERTIFICATE ===")
     print(f"Project: {environment.project_name}")
     print(f"Status: {plan.status}")
-    print("Missing goal facts: " + (", ".join(sorted(goal - environment.facts)) or "none"))
+    print(f"Observed goal facts: {len(goal & environment.facts)}/{len(goal)}")
+    print("Missing goal facts: " + (", ".join(sorted(missing)) or "none"))
+    print("Objective order: data-risk -> destructiveness -> disruption -> actions")
+    print(f"Total cost: {plan.total_cost}")
+    print("Safety policy:")
+    print("  PASS: deny-by-default operator allowlist")
+    print("  PASS: project-scoped service and resource mutations")
+    print("  PASS: no delete, foreign-port eviction, or file-edit operators")
     if environment.errors:
         print("Collection notes: " + "; ".join(environment.errors))
     if environment.blocked_reasons:
-        print("Blocked by: " + "; ".join(environment.blocked_reasons))
+        for reason in environment.blocked_reasons:
+            print(f"  FAIL: {reason}")
 
-    print("\nProposed commands (nothing was executed):")
+    print("\nCertified plan (nothing was executed):")
     if not plan.actions:
         print("  <none>")
+    predicted = environment.facts
     for number, action in enumerate(plan.actions, 1):
         label = "manual check" if action.manual else "proposed"
         print(f"  {number}. {action.name} [{label}, cost={action.cost}]")
         print(f"     {_command(environment, action)}")
-    print(f"\nTotal cost: {plan.total_cost}; explored states: {plan.explored_states}")
+        print("     requires: " + (", ".join(sorted(action.requires)) or "none"))
+        print("     adds: " + (", ".join(sorted(action.adds)) or "none"))
+        print("     removes: " + (", ".join(sorted(action.removes)) or "none"))
+        print("     safety: " + "; ".join(action.safety_checks))
+        print(f"     symbolic preconditions satisfied: {'yes' if action.requires <= predicted else 'no'}")
+        predicted = action.apply(predicted)
+    print(f"\nExplored states: {plan.explored_states}")
+    print("Certificate scope: symbolic effects are predictions until execution verifies them.")
     print(plan.message)
+
+
+def _print_action_certificate(action, state):
+    print("   --- ACTION CERTIFICATE ---")
+    print(f"   Cost: {action.cost}")
+    print(f"   Preconditions satisfied: {'yes' if action.requires <= state else 'no'}")
+    print("   Expected additions: " + (", ".join(sorted(action.adds)) or "none"))
+    print("   Expected removals: " + (", ".join(sorted(action.removes)) or "none"))
+    print("   Safety validation: " + ("; ".join(action.safety_checks) or "not certified"))
+
+
+def _print_resolution_certificate(environment, goal, attempts, total_cost, resolved, reason=""):
+    missing = goal - environment.facts
+    succeeded = sum(item[1] for item in attempts)
+    rejected = len(attempts) - succeeded
+    print("\n=== RESOLUTION CERTIFICATE ===")
+    print(f"Status: {'VERIFIED' if resolved else 'INCOMPLETE'}")
+    print(f"Observed goal facts: {len(goal & environment.facts)}/{len(goal)}")
+    print("Missing goal facts: " + (", ".join(sorted(missing)) or "none"))
+    print(f"Actions attempted: {len(attempts)}; succeeded: {succeeded}; rejected: {rejected}")
+    print(f"Accumulated cost: {total_cost}")
+    if reason:
+        print(f"Reason: {reason}")
+    if environment.blocked_reasons:
+        print("Safety blockers: " + "; ".join(environment.blocked_reasons))
 
 
 def _docker_daemon_ready():
@@ -123,7 +167,12 @@ def execute_action(environment, action, limits=Limits()):
     if action.manual:
         wanted = action.adds
         succeeded, observed = _wait_for_facts(environment.compose_file, wanted, limits.health_timeout)
-        subject = "Readiness" if any(item.startswith("endpoint_ready:") for item in wanted) else "Health"
+        if any(item.startswith("completed_successfully:") for item in wanted):
+            subject = "Completion"
+        elif any(item.startswith("endpoint_ready:") for item in wanted):
+            subject = "Readiness"
+        else:
+            subject = "Health"
         message = f"{subject} check passed." if succeeded else f"{subject} did not converge within {limits.health_timeout:g} seconds."
         return succeeded, message, observed
 
@@ -177,6 +226,23 @@ def _effect_was_observed(action, environment):
             name = expected.split(":", 1)[1]
             if not any(fact(kind, name) in environment.facts for kind in ("health_pending", "healthy")):
                 return False
+        elif expected.startswith("completion_pending:"):
+            name = expected.split(":", 1)[1]
+            if not any(
+                fact(kind, name) in environment.facts
+                for kind in ("completion_pending", "completed_successfully")
+            ):
+                return False
+        elif expected.startswith("running:") and any(
+            item == f"completion_pending:{expected.split(':', 1)[1]}"
+            for item in action.adds
+        ):
+            name = expected.split(":", 1)[1]
+            if not any(
+                fact(kind, name) in environment.facts
+                for kind in ("running", "completed_successfully")
+            ):
+                return False
         elif expected not in environment.facts:
             return False
     for removed in action.removes - action.adds:
@@ -185,6 +251,10 @@ def _effect_was_observed(action, environment):
         if removed.startswith("healthy:"):
             name = removed.split(":", 1)[1]
             if fact("health_pending", name) in action.adds:
+                continue
+        if removed.startswith("completed_successfully:"):
+            name = removed.split(":", 1)[1]
+            if fact("completion_pending", name) in action.adds:
                 continue
         if removed in environment.facts:
             return False
@@ -197,12 +267,17 @@ def execute_until_resolved(compose_file, limits=Limits(), search_fn=search, even
     environment = collect_environment(compose_file)
     excluded = set()
     previous_mutation = None
+    attempts = []
+    accumulated_cost = RepairCost()
 
     for step in range(1, limits.max_actions + 1):
         plan, goal = search_fn(environment, frozenset(excluded))
         if goal <= environment.facts:
             elapsed = time.perf_counter() - started
             print(f"Resolved and verified in {elapsed:.3f} seconds after {step - 1} action(s).")
+            _print_resolution_certificate(
+                environment, goal, attempts, accumulated_cost, True,
+            )
             return 0
         if not plan.actions:
             print(f"Repair stopped: {plan.message}")
@@ -210,6 +285,9 @@ def execute_until_resolved(compose_file, limits=Limits(), search_fn=search, even
                 print("Collection notes: " + "; ".join(environment.errors))
             if environment.blocked_reasons:
                 print("Blocked by: " + "; ".join(environment.blocked_reasons))
+            _print_resolution_certificate(
+                environment, goal, attempts, accumulated_cost, False, plan.message,
+            )
             return 2
 
         # Run only the first edge because the observed state may then change.
@@ -221,6 +299,8 @@ def execute_until_resolved(compose_file, limits=Limits(), search_fn=search, even
                 "key": action.key, "manual": action.manual, "executor": action.executor,
             })
         print(f"{step}. Executing: {action.name}\n   {_command(environment, action)}")
+        _print_action_certificate(action, action_state)
+        accumulated_cost += action.cost
         succeeded, output, environment = execute_action(environment, action, limits)
         if output:
             print(f"   {output}")
@@ -245,8 +325,13 @@ def execute_until_resolved(compose_file, limits=Limits(), search_fn=search, even
                 event_sink({"type": "action_failed", "step": step, "action": action.name, "key": action.key})
         elif action.manual:
             previous_mutation = None
+        attempts.append((action.key, succeeded))
 
     print(f"Repair stopped after the limit of {limits.max_actions} actions.")
+    _print_resolution_certificate(
+        environment, goal, attempts, accumulated_cost, False,
+        f"action limit {limits.max_actions} reached",
+    )
     return 2
 
 

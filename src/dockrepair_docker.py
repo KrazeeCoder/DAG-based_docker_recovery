@@ -59,6 +59,45 @@ def _dependencies(service):
     ))
 
 
+def _desired_replicas(service):
+    scale = service.get("scale")
+    deploy = service.get("deploy") or {}
+    value = scale if scale is not None else deploy.get("replicas", 1)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 1
+
+
+def _replica_blockers(services, containers_by_service=None):
+    reasons = []
+    for name, service in sorted(services.items()):
+        if service.desired_replicas != 1:
+            reasons.append(
+                f"Service '{name}' declares {service.desired_replicas} replicas; "
+                "DockRepair supports exactly one container per service."
+            )
+    for name, containers in sorted((containers_by_service or {}).items()):
+        if name in services and len(containers) != 1:
+            reasons.append(
+                f"Service '{name}' has {len(containers)} containers; "
+                "DockRepair supports exactly one container per service."
+            )
+    return tuple(reasons)
+
+
+def _completion_facts(name, service, container):
+    if not service.completion_required:
+        return frozenset()
+    if container.running:
+        return frozenset({f"completion_pending:{name}"})
+    if container.exit_code == 0:
+        return frozenset({f"completed_successfully:{name}"})
+    if container.exit_code is not None:
+        return frozenset({f"completion_failed:{name}"})
+    return frozenset()
+
+
 def _needs_healthcheck(service):
     healthcheck = service.get("healthcheck")
     if not healthcheck or healthcheck.get("disable"):
@@ -337,27 +376,51 @@ def collect_environment(compose_file):
     hash_error = None if hashes_ok else hashes_text
     networks = _resources(config, "networks", project_name)
     volumes = _resources(config, "volumes", project_name)
+    service_configs = config.get("services") or {}
+    dependencies = {
+        name: _dependencies(service)
+        for name, service in service_configs.items()
+    }
+    completion_services = {
+        dependency
+        for service_dependencies in dependencies.values()
+        for dependency, condition in service_dependencies
+        if condition == "service_completed_successfully"
+    }
     services = {
         name: Service(
             _needs_healthcheck(service),
             hashes.get(name),
-            _dependencies(service),
+            dependencies[name],
             _logical_networks(service, networks),
             _mounts(service),
             _ports(service),
             _readiness(service),
+            name in completion_services,
+            _desired_replicas(service),
         )
-        for name, service in sorted((config.get("services") or {}).items())
+        for name, service in sorted(service_configs.items())
     }
 
     facts = {"compose_valid"}
     errors = [hash_error] if hash_error else []
     blocked = []
+    supported_conditions = {
+        "service_started", "service_healthy", "service_completed_successfully",
+    }
+    blocked.extend(_replica_blockers(services))
+    for name, service in services.items():
+        for dependency, condition in service.dependencies:
+            if condition not in supported_conditions:
+                blocked.append(
+                    f"Service '{name}' uses unsupported dependency condition "
+                    f"'{condition}' for '{dependency}'."
+                )
     daemon_ok, daemon_error = _run(["docker", "info", "--format", "{{.ServerVersion}}"], cwd)
     if not daemon_ok:
         return Environment(
             str(path), project_name, services, frozenset(facts), (daemon_error,),
-            {}, networks, volumes,
+            {}, networks, volumes, blocked_reasons=tuple(dict.fromkeys(blocked)),
         )
     facts.add("daemon_reachable")
 
@@ -386,7 +449,8 @@ def collect_environment(compose_file):
         labels = (container.get("Config") or {}).get("Labels") or {}
         service_name = labels.get("com.docker.compose.service")
         if service_name:
-            raw_by_service[service_name] = container
+            raw_by_service.setdefault(service_name, []).append(container)
+    blocked.extend(_replica_blockers(services, raw_by_service))
 
     # Inspect all running containers only to determine whether desired host ports
     # are occupied by a different container.
@@ -412,7 +476,8 @@ def collect_environment(compose_file):
             elif mount.kind == "bind":
                 facts.add(f"bind_exists:{name}:{mount.target}")
 
-        raw = raw_by_service.get(name)
+        service_containers = raw_by_service.get(name) or ()
+        raw = service_containers[0] if service_containers else None
         container_id = str((raw or {}).get("Id") or "")
         for port in service.ports:
             if port.published is None:
@@ -473,6 +538,7 @@ def collect_environment(compose_file):
             facts.add(f"running:{name}")
         else:
             facts.add(f"stopped:{name}")
+        facts.update(_completion_facts(name, service, containers[name]))
         if containers[name].oom_killed:
             facts.add(f"oom_killed:{name}")
         if containers[name].running and health == "healthy":

@@ -77,6 +77,8 @@ class Service:
     mounts: tuple[Mount, ...] = ()
     ports: tuple[Port, ...] = ()
     readiness: ReadinessProbe | None = None
+    completion_required: bool = False
+    desired_replicas: int = 1
 
 
 @dataclass(frozen=True)
@@ -118,18 +120,45 @@ class Environment:
         return "daemon_reachable" in self.facts
 
 
+@dataclass(frozen=True, order=True)
+class RepairCost:
+    """Lexicographic repair policy, ordered from highest to lowest priority."""
+
+    data_risk: int = 0
+    destructiveness: int = 0
+    disruption: int = 0
+    actions: int = 0
+
+    def __add__(self, other):
+        if not isinstance(other, RepairCost):
+            return NotImplemented
+        return RepairCost(
+            self.data_risk + other.data_risk,
+            self.destructiveness + other.destructiveness,
+            self.disruption + other.disruption,
+            self.actions + other.actions,
+        )
+
+    def __str__(self):
+        return (
+            f"(data-risk={self.data_risk}, destructiveness={self.destructiveness}, "
+            f"disruption={self.disruption}, actions={self.actions})"
+        )
+
+
 @dataclass(frozen=True)
 class Action:
     # One graph edge: requirements, add/delete effects, command, and cost.
     name: str
     arguments: tuple[str, ...]
-    cost: int
+    cost: RepairCost
     requires: frozenset[str]
     adds: frozenset[str]
     manual: bool = False
     removes: frozenset[str] = frozenset()
     identity: tuple[str, ...] = ()
     executor: str = "compose"
+    safety_checks: tuple[str, ...] = ()
 
     def is_allowed(self, state):
         return self.requires <= state
@@ -151,7 +180,10 @@ class Plan:
 
     @property
     def total_cost(self):
-        return sum(action.cost for action in self.actions)
+        total = RepairCost()
+        for action in self.actions:
+            total += action.cost
+        return total
 
     @property
     def message(self):
