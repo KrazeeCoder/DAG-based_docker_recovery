@@ -1,4 +1,22 @@
 from dataclasses import dataclass
+from ipaddress import ip_address
+
+
+def normalize_host_ip(value):
+    value = str(value or "").strip().strip("[]")
+    if not value:
+        return "*"
+    try:
+        return ip_address(value).compressed
+    except ValueError:
+        return value.lower()
+
+
+def port_binding_key(host_ip, published, protocol):
+    host = normalize_host_ip(host_ip)
+    if ":" in host:
+        host = f"[{host}]"
+    return f"{host}:{published}/{str(protocol).lower()}"
 
 
 @dataclass(frozen=True)
@@ -10,7 +28,26 @@ class Port:
 
     @property
     def key(self):
-        return f"{self.host_ip or '*'}:{self.published}/{self.protocol}"
+        return port_binding_key(self.host_ip, self.published, self.protocol)
+
+
+@dataclass(frozen=True)
+class PublishedPort:
+    target: int
+    published: int
+    protocol: str = "tcp"
+    host_ip: str = ""
+
+    @property
+    def key(self):
+        return port_binding_key(self.host_ip, self.published, self.protocol)
+
+
+@dataclass(frozen=True)
+class ReadinessProbe:
+    url: str
+    statuses: frozenset[int] = frozenset(range(200, 400))
+    timeout: float = 2.0
 
 
 @dataclass(frozen=True)
@@ -39,6 +76,9 @@ class Service:
     networks: tuple[str, ...] = ()
     mounts: tuple[Mount, ...] = ()
     ports: tuple[Port, ...] = ()
+    readiness: ReadinessProbe | None = None
+    completion_required: bool = False
+    desired_replicas: int = 1
 
 
 @dataclass(frozen=True)
@@ -56,7 +96,7 @@ class Container:
     config_hash: str | None
     networks: frozenset[str]
     mounts: frozenset[str]
-    published_ports: frozenset[str]
+    published_ports: frozenset[PublishedPort]
 
 
 @dataclass(frozen=True)
@@ -80,18 +120,45 @@ class Environment:
         return "daemon_reachable" in self.facts
 
 
+@dataclass(frozen=True, order=True)
+class RepairCost:
+    """Lexicographic repair policy, ordered from highest to lowest priority."""
+
+    data_risk: int = 0
+    destructiveness: int = 0
+    disruption: int = 0
+    actions: int = 0
+
+    def __add__(self, other):
+        if not isinstance(other, RepairCost):
+            return NotImplemented
+        return RepairCost(
+            self.data_risk + other.data_risk,
+            self.destructiveness + other.destructiveness,
+            self.disruption + other.disruption,
+            self.actions + other.actions,
+        )
+
+    def __str__(self):
+        return (
+            f"(data-risk={self.data_risk}, destructiveness={self.destructiveness}, "
+            f"disruption={self.disruption}, actions={self.actions})"
+        )
+
+
 @dataclass(frozen=True)
 class Action:
     # One graph edge: requirements, add/delete effects, command, and cost.
     name: str
     arguments: tuple[str, ...]
-    cost: int
+    cost: RepairCost
     requires: frozenset[str]
     adds: frozenset[str]
     manual: bool = False
     removes: frozenset[str] = frozenset()
     identity: tuple[str, ...] = ()
     executor: str = "compose"
+    safety_checks: tuple[str, ...] = ()
 
     def is_allowed(self, state):
         return self.requires <= state
@@ -113,7 +180,10 @@ class Plan:
 
     @property
     def total_cost(self):
-        return sum(action.cost for action in self.actions)
+        total = RepairCost()
+        for action in self.actions:
+            total += action.cost
+        return total
 
     @property
     def message(self):
