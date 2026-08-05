@@ -1,3 +1,4 @@
+ # yaml-language-server: $schema=./compose.schema.json
 name: dockrepair-bench-missing-service
 
 services:
