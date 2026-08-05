@@ -1,3 +1,5 @@
+"""Codex vs naive vs DockRepair vs compose-up bakeoff."""
+
 from __future__ import annotations
 
 import argparse
@@ -24,6 +26,7 @@ from scenarios import (  # noqa: E402
     assert_broken,
     assert_files_unchanged,
     clean_project,
+    compose,
     ensure_daemon,
     file_hashes,
     inspect_goal,
@@ -31,7 +34,7 @@ from scenarios import (  # noqa: E402
 
 RESULTS_DIR = HERE / "results"
 RESULTS_FILE = RESULTS_DIR / "bakeoff_results.json"
-ARMS = ("codex", "naive", "planner")
+ARMS = ("compose_up", "naive", "planner", "codex")
 DEFAULT_SCENARIOS = tuple(SCENARIOS)
 CODEX_MODEL = os.environ.get("DOCKREPAIR_CODEX_MODEL", "gpt-5.6-terra")
 CODEX_PROMPT = (
@@ -62,7 +65,27 @@ def write_json(path, value):
     os.replace(temporary, path)
 
 
+def _finish(scenario, hashes, started, **extra):
+    elapsed = time.perf_counter() - started
+    try:
+        assert_files_unchanged(hashes)
+        files_unchanged = True
+    except RuntimeError:
+        files_unchanged = False
+    healthy, missing, errors = inspect_goal(scenario.compose_file)
+    return {
+        "seconds": round(elapsed, 3),
+        "success": healthy and files_unchanged,
+        "missing_at_end": missing,
+        "errors": errors,
+        "files_unchanged": files_unchanged,
+        "safety_violation_suspected": not files_unchanged,
+        **extra,
+    }
+
+
 def run_planner_arm(scenario, search_fn):
+    hashes = file_hashes(scenario)
     events = []
     started = time.perf_counter()
     return_code = execute_until_resolved(
@@ -71,20 +94,42 @@ def run_planner_arm(scenario, search_fn):
         search_fn=search_fn,
         event_sink=events.append,
     )
-    elapsed = time.perf_counter() - started
-    healthy, missing, errors = inspect_goal(scenario.compose_file)
-    mutations = sum(1 for event in events if event.get("type") == "action_started")
+    mutations = sum(
+        1 for event in events
+        if event.get("type") == "action_started" and not event.get("manual")
+    )
+    observations = sum(
+        1 for event in events
+        if event.get("type") == "action_started" and event.get("manual")
+    )
     failures = sum(1 for event in events if event.get("type") == "action_failed")
-    return {
-        "seconds": round(elapsed, 3),
-        "success": return_code == 0 and healthy,
-        "return_code": return_code,
-        "missing_at_end": missing,
-        "errors": errors,
-        "mutating_actions": mutations,
-        "failed_actions": failures,
-        "safety_violation_suspected": False,
-    }
+    return _finish(
+        scenario, hashes, started,
+        return_code=return_code,
+        mutating_actions=mutations,
+        observations=observations,
+        failed_actions=failures,
+    )
+
+
+def run_compose_up_arm(scenario):
+    hashes = file_hashes(scenario)
+    started = time.perf_counter()
+    try:
+        result = compose(
+            scenario.compose_file, "up", "-d", "--wait", "--wait-timeout", "60",
+            quiet=True,
+        )
+        return_code = result.returncode
+    except RuntimeError:
+        return_code = 1
+    return _finish(
+        scenario, hashes, started,
+        return_code=return_code,
+        mutating_actions=1,
+        observations=0,
+        failed_actions=0 if return_code == 0 else 1,
+    )
 
 
 def run_codex_arm(scenario, trial_id):
@@ -120,31 +165,19 @@ def run_codex_arm(scenario, trial_id):
         return_code = 124
         stdout = error.stdout if isinstance(error.stdout, str) else ""
         stderr = "timeout"
-    elapsed = time.perf_counter() - started
     transcript.parent.mkdir(parents=True, exist_ok=True)
     transcript.write_text(
         stdout + (f"\n# stderr\n{stderr}\n" if stderr else ""),
         encoding="utf-8",
     )
-    try:
-        assert_files_unchanged(hashes)
-        files_unchanged = True
-    except RuntimeError:
-        files_unchanged = False
-    healthy, missing, errors = inspect_goal(scenario.compose_file)
-    return {
-        "seconds": round(elapsed, 3),
-        "success": healthy and files_unchanged,
-        "return_code": return_code,
-        "missing_at_end": missing,
-        "errors": errors,
-        "timed_out": timed_out,
-        "transcript_path": str(transcript),
-        "model": CODEX_MODEL,
-        "mutating_actions": 0,
-        "safety_violation_suspected": not files_unchanged,
-        "files_unchanged": files_unchanged,
-    }
+    return _finish(
+        scenario, hashes, started,
+        return_code=return_code,
+        timed_out=timed_out,
+        transcript_path=str(transcript),
+        model=CODEX_MODEL,
+        mutating_actions=None,
+    )
 
 
 def recreate_fault(scenario):
@@ -154,6 +187,14 @@ def recreate_fault(scenario):
     missing = assert_broken(scenario)
     print(f"  missing: {', '.join(missing)}")
     return missing
+
+
+ARM_RUNNERS = {
+    "compose_up": lambda scenario, trial_id: run_compose_up_arm(scenario),
+    "naive": lambda scenario, trial_id: run_planner_arm(scenario, search_naive),
+    "planner": lambda scenario, trial_id: run_planner_arm(scenario, search),
+    "codex": lambda scenario, trial_id: run_codex_arm(scenario, trial_id),
+}
 
 
 def run_one_repetition(scenario, arm_order, repetition, seed):
@@ -169,12 +210,7 @@ def run_one_repetition(scenario, arm_order, repetition, seed):
     }
     for arm in arm_order:
         recreate_fault(scenario)
-        if arm == "codex":
-            result = run_codex_arm(scenario, trial_id)
-        elif arm == "naive":
-            result = run_planner_arm(scenario, search_naive)
-        else:
-            result = run_planner_arm(scenario, search)
+        result = ARM_RUNNERS[arm](scenario, trial_id)
         row[arm] = result
         status = "OK" if result["success"] else "FAIL"
         print(f"  {arm}: {status} in {result['seconds']:.2f}s")
@@ -197,10 +233,14 @@ def _summarize(runs, arms):
     for arm in arms:
         rows = [row[arm] for row in runs if arm in row]
         ok = [row for row in rows if row["success"]]
-        mutations = [row.get("mutating_actions", 0) for row in rows]
+        mutations = [
+            row["mutating_actions"] for row in rows
+            if row.get("mutating_actions") is not None
+        ]
         summary["arms"][arm] = {
             "success_rate": round(len(ok) / len(rows), 3) if rows else 0.0,
             "n": len(rows),
+            "mean_seconds": round(sum(r["seconds"] for r in rows) / len(rows), 3) if rows else None,
             "mean_seconds_success": round(sum(r["seconds"] for r in ok) / len(ok), 3) if ok else None,
             "mean_mutating_actions": round(sum(mutations) / len(mutations), 3) if mutations else None,
             "safety_violations": sum(1 for row in rows if row.get("safety_violation_suspected")),
@@ -230,16 +270,19 @@ def cmd_results():
     if not runs:
         print("No results yet.")
         return 0
-    print(f"{'id':18} {'rep':>3} {'codex_s':>8} {'c':>2} {'naive_s':>8} {'n':>2} {'plan_s':>8} {'p':>2}")
+    arms = list(ARMS)
+    header = f"{'id':20} {'rep':>3}" + "".join(f" {arm:>10}" for arm in arms)
+    print(header)
     for row in runs:
-        def fmt(arm):
-            if not arm:
-                return f"{'—':>8} {'—':>2}"
-            return f"{arm['seconds']:>8.2f} {'Y' if arm['success'] else 'N':>2}"
-        print(
-            f"{row['id']:18} {row['repetition']:>3} "
-            f"{fmt(row.get('codex'))} {fmt(row.get('naive'))} {fmt(row.get('planner'))}"
-        )
+        cells = []
+        for arm in arms:
+            data = row.get(arm)
+            if not data:
+                cells.append(f"{'—':>10}")
+            else:
+                mark = "Y" if data["success"] else "N"
+                cells.append(f"{data['seconds']:7.1f}{mark}")
+        print(f"{row['id']:20} {row['repetition']:>3}" + "".join(f" {cell:>10}" for cell in cells))
     return 0
 
 
@@ -253,11 +296,14 @@ def cmd_summary():
     return 0
 
 
-def cmd_run(scenario_names, repetitions, seed, skip_codex):
+def cmd_run(scenario_names, repetitions, seed, skip_codex, fresh):
     ensure_daemon()
     scenarios = selected_scenarios(scenario_names)
     rng = random.Random(seed)
-    results = read_json(RESULTS_FILE, {"runs": [], "meta": {}})
+    if fresh or not RESULTS_FILE.is_file():
+        results = {"runs": [], "meta": {}}
+    else:
+        results = read_json(RESULTS_FILE, {"runs": [], "meta": {}})
     results["meta"] = {
         "seed": seed,
         "repetitions": repetitions,
@@ -288,6 +334,11 @@ def parse_args():
     parser.add_argument("--repetitions", type=int, default=1)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--skip-codex", action="store_true")
+    parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Replace results file instead of appending.",
+    )
     return parser.parse_args()
 
 
@@ -300,7 +351,9 @@ def main():
             return cmd_results()
         if args.command == "summary":
             return cmd_summary()
-        return cmd_run(args.scenarios, args.repetitions, args.seed, args.skip_codex)
+        return cmd_run(
+            args.scenarios, args.repetitions, args.seed, args.skip_codex, args.fresh,
+        )
     except (OSError, RuntimeError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2

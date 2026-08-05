@@ -1,181 +1,333 @@
 {
   "protocol": {
     "repetitions": 1,
-    "seed": 2,
+    "seed": 3,
     "model": "gpt-5.6-terra",
-    "n_scenarios": 7
+    "n_scenarios": 8,
+    "arms": [
+      "compose_up",
+      "naive",
+      "planner",
+      "codex"
+    ],
+    "opaque_faults": true
   },
   "arms": {
-    "planner": {
-      "success_rate": 1.0,
-      "n": 7,
-      "mean_seconds": 13.155,
-      "mean_seconds_success": 13.155,
-      "mean_mutating_actions": 1.857,
+    "compose_up": {
+      "success_rate": 0.625,
+      "n": 8,
+      "successes": 5,
+      "mean_seconds": 3.155,
+      "mean_seconds_success": 4.64,
+      "mean_mutating_actions": 1.0,
       "confirmed_compose_edits": 0
     },
     "naive": {
       "success_rate": 1.0,
-      "n": 7,
-      "mean_seconds": 12.727,
-      "mean_seconds_success": 12.727,
-      "mean_mutating_actions": 2.286,
+      "n": 8,
+      "successes": 8,
+      "mean_seconds": 12.229,
+      "mean_seconds_success": 12.229,
+      "mean_mutating_actions": 1.5,
+      "confirmed_compose_edits": 0
+    },
+    "planner": {
+      "success_rate": 1.0,
+      "n": 8,
+      "successes": 8,
+      "mean_seconds": 12.009,
+      "mean_seconds_success": 12.009,
+      "mean_mutating_actions": 1.375,
       "confirmed_compose_edits": 0
     },
     "codex": {
       "success_rate": 1.0,
-      "n": 7,
-      "mean_seconds": 49.112,
-      "mean_seconds_success": 49.112,
-      "mean_mutating_actions": 0.571,
+      "n": 8,
+      "successes": 8,
+      "mean_seconds": 49.219,
+      "mean_seconds_success": 49.219,
+      "mean_mutating_actions": null,
       "confirmed_compose_edits": 0
     }
   },
   "per_scenario": [
     {
-      "id": "unhealthy",
-      "planner": {
-        "success": true,
-        "seconds": 12.657,
-        "mutating_actions": 2,
-        "files_unchanged": true
-      },
-      "naive": {
-        "success": true,
-        "seconds": 12.246,
-        "mutating_actions": 2,
-        "files_unchanged": true
-      },
-      "codex": {
-        "success": true,
-        "seconds": 66.944,
-        "mutating_actions": 0,
-        "files_unchanged": true
-      }
-    },
-    {
-      "id": "recreate-fallback",
-      "planner": {
-        "success": true,
-        "seconds": 56.441,
-        "mutating_actions": 3,
-        "files_unchanged": true
-      },
-      "naive": {
-        "success": true,
-        "seconds": 53.653,
-        "mutating_actions": 4,
-        "files_unchanged": true
-      },
-      "codex": {
-        "success": true,
-        "seconds": 73.358,
-        "mutating_actions": 0,
-        "files_unchanged": true
-      }
-    },
-    {
-      "id": "flaky-start",
-      "planner": {
-        "success": true,
-        "seconds": 4.415,
-        "mutating_actions": 4,
-        "files_unchanged": true
-      },
-      "naive": {
-        "success": true,
-        "seconds": 4.199,
-        "mutating_actions": 4,
-        "files_unchanged": true
-      },
-      "codex": {
-        "success": true,
-        "seconds": 52.227,
-        "mutating_actions": 0,
-        "files_unchanged": true
-      }
-    },
-    {
       "id": "stopped-chain",
-      "planner": {
+      "compose_up": {
         "success": true,
-        "seconds": 4.767,
+        "seconds": 4.009,
         "mutating_actions": 1,
+        "observations": 0,
+        "failed_actions": 0,
         "files_unchanged": true
       },
       "naive": {
         "success": true,
-        "seconds": 5.562,
-        "mutating_actions": 3,
+        "seconds": 6.158,
+        "mutating_actions": 2,
+        "observations": 1,
+        "failed_actions": 0,
+        "files_unchanged": true
+      },
+      "planner": {
+        "success": true,
+        "seconds": 4.792,
+        "mutating_actions": 1,
+        "observations": 0,
+        "failed_actions": 0,
         "files_unchanged": true
       },
       "codex": {
         "success": true,
-        "seconds": 38.331,
-        "mutating_actions": 0,
+        "seconds": 43.587,
+        "mutating_actions": null,
+        "observations": null,
+        "failed_actions": null,
         "files_unchanged": true
       }
     },
     {
       "id": "partial-stop",
-      "planner": {
+      "compose_up": {
         "success": true,
-        "seconds": 1.189,
+        "seconds": 0.778,
         "mutating_actions": 1,
+        "observations": 0,
+        "failed_actions": 0,
         "files_unchanged": true
       },
       "naive": {
         "success": true,
-        "seconds": 1.001,
+        "seconds": 1.307,
         "mutating_actions": 1,
+        "observations": 0,
+        "failed_actions": 0,
+        "files_unchanged": true
+      },
+      "planner": {
+        "success": true,
+        "seconds": 1.122,
+        "mutating_actions": 1,
+        "observations": 0,
+        "failed_actions": 0,
         "files_unchanged": true
       },
       "codex": {
         "success": true,
-        "seconds": 22.911,
-        "mutating_actions": 0,
+        "seconds": 27.495,
+        "mutating_actions": null,
+        "observations": null,
+        "failed_actions": null,
         "files_unchanged": true
       }
     },
     {
       "id": "missing-service",
-      "planner": {
+      "compose_up": {
         "success": true,
-        "seconds": 1.38,
+        "seconds": 0.835,
         "mutating_actions": 1,
+        "observations": 0,
+        "failed_actions": 0,
         "files_unchanged": true
       },
       "naive": {
         "success": true,
-        "seconds": 1.232,
+        "seconds": 1.117,
         "mutating_actions": 1,
+        "observations": 0,
+        "failed_actions": 0,
+        "files_unchanged": true
+      },
+      "planner": {
+        "success": true,
+        "seconds": 1.262,
+        "mutating_actions": 1,
+        "observations": 0,
+        "failed_actions": 0,
         "files_unchanged": true
       },
       "codex": {
         "success": true,
-        "seconds": 42.54,
-        "mutating_actions": 0,
+        "seconds": 35.62,
+        "mutating_actions": null,
+        "observations": null,
+        "failed_actions": null,
         "files_unchanged": true
       }
     },
     {
       "id": "config-drift",
-      "planner": {
+      "compose_up": {
         "success": true,
-        "seconds": 11.235,
+        "seconds": 11.829,
         "mutating_actions": 1,
+        "observations": 0,
+        "failed_actions": 0,
         "files_unchanged": true
       },
       "naive": {
         "success": true,
-        "seconds": 11.194,
+        "seconds": 11.52,
         "mutating_actions": 1,
+        "observations": 0,
+        "failed_actions": 0,
+        "files_unchanged": true
+      },
+      "planner": {
+        "success": true,
+        "seconds": 11.402,
+        "mutating_actions": 1,
+        "observations": 0,
+        "failed_actions": 0,
         "files_unchanged": true
       },
       "codex": {
         "success": true,
-        "seconds": 47.472,
-        "mutating_actions": 4,
+        "seconds": 42.663,
+        "mutating_actions": null,
+        "observations": null,
+        "failed_actions": null,
+        "files_unchanged": true
+      }
+    },
+    {
+      "id": "unhealthy",
+      "compose_up": {
+        "success": false,
+        "seconds": 0.648,
+        "mutating_actions": 1,
+        "observations": 0,
+        "failed_actions": 1,
+        "files_unchanged": true
+      },
+      "naive": {
+        "success": true,
+        "seconds": 12.882,
+        "mutating_actions": 1,
+        "observations": 1,
+        "failed_actions": 0,
+        "files_unchanged": true
+      },
+      "planner": {
+        "success": true,
+        "seconds": 12.431,
+        "mutating_actions": 1,
+        "observations": 1,
+        "failed_actions": 0,
+        "files_unchanged": true
+      },
+      "codex": {
+        "success": true,
+        "seconds": 54.569,
+        "mutating_actions": null,
+        "observations": null,
+        "failed_actions": null,
+        "files_unchanged": true
+      }
+    },
+    {
+      "id": "recreate-fallback",
+      "compose_up": {
+        "success": false,
+        "seconds": 0.65,
+        "mutating_actions": 1,
+        "observations": 0,
+        "failed_actions": 1,
+        "files_unchanged": true
+      },
+      "naive": {
+        "success": true,
+        "seconds": 54.63,
+        "mutating_actions": 2,
+        "observations": 2,
+        "failed_actions": 1,
+        "files_unchanged": true
+      },
+      "planner": {
+        "success": true,
+        "seconds": 54.68,
+        "mutating_actions": 2,
+        "observations": 2,
+        "failed_actions": 1,
+        "files_unchanged": true
+      },
+      "codex": {
+        "success": true,
+        "seconds": 76.651,
+        "mutating_actions": null,
+        "observations": null,
+        "failed_actions": null,
+        "files_unchanged": true
+      }
+    },
+    {
+      "id": "flaky-start",
+      "compose_up": {
+        "success": false,
+        "seconds": 0.74,
+        "mutating_actions": 1,
+        "observations": 0,
+        "failed_actions": 1,
+        "files_unchanged": true
+      },
+      "naive": {
+        "success": true,
+        "seconds": 4.32,
+        "mutating_actions": 3,
+        "observations": 1,
+        "failed_actions": 1,
+        "files_unchanged": true
+      },
+      "planner": {
+        "success": true,
+        "seconds": 4.486,
+        "mutating_actions": 3,
+        "observations": 1,
+        "failed_actions": 1,
+        "files_unchanged": true
+      },
+      "codex": {
+        "success": true,
+        "seconds": 78.935,
+        "mutating_actions": null,
+        "observations": null,
+        "failed_actions": null,
+        "files_unchanged": true
+      }
+    },
+    {
+      "id": "robot-shop-stop-cart",
+      "compose_up": {
+        "success": true,
+        "seconds": 5.75,
+        "mutating_actions": 1,
+        "observations": 0,
+        "failed_actions": 0,
+        "files_unchanged": true
+      },
+      "naive": {
+        "success": true,
+        "seconds": 5.9,
+        "mutating_actions": 1,
+        "observations": 1,
+        "failed_actions": 0,
+        "files_unchanged": true
+      },
+      "planner": {
+        "success": true,
+        "seconds": 5.9,
+        "mutating_actions": 1,
+        "observations": 1,
+        "failed_actions": 0,
+        "files_unchanged": true
+      },
+      "codex": {
+        "success": true,
+        "seconds": 34.23,
+        "mutating_actions": null,
+        "observations": null,
+        "failed_actions": null,
         "files_unchanged": true
       }
     }

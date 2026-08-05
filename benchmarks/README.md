@@ -1,16 +1,19 @@
 # Bakeoff
 
-Compare Codex, naive planner, and DockRepair on local Compose faults.
+Four arms on opaque Compose faults: `compose_up`, `naive`, `planner`, `codex`.
 
 ```bash
 export PATH="/opt/homebrew/bin:$PATH"
 colima start
 docker context use colima
 PYTHONPATH=src python3 benchmarks/bakeoff.py list
-PYTHONPATH=src python3 benchmarks/bakeoff.py run --repetitions 1 --seed 2
+PYTHONUNBUFFERED=1 PYTHONPATH=src python3 benchmarks/bakeoff.py run --fresh --repetitions 1 --seed 3
 PYTHONPATH=src python3 benchmarks/bakeoff.py summary
 ```
 
-Planner-only: `PYTHONPATH=src python3 benchmarks/bakeoff.py run --skip-codex`
+`--skip-codex` for planner arms only. `--scenario unhealthy` for one case.
 
-Results go under `benchmarks/results/`. Paper numbers: `paper/results_summary.json`.
+Adaptive fixtures mount sabotage scripts from `~/.dockrepair-bench/` (not in git).
+Robot Shop cart slice: `benchmarks/fixtures/robot_cart/`.
+
+Results: `benchmarks/results/` (gitignored). Paper: `paper/results_summary.json`.

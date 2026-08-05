@@ -1,0 +1,19 @@
+name: dockrepair-bench-robot-cart
+
+# Minimal Stan's Robot Shop slice (public images). Full stack is too heavy /
+# flaky on small VMs (shipping health). Cart only needs Redis.
+
+services:
+  redis:
+    image: redis:6.2-alpine
+  cart:
+    image: robotshop/rs-cart:2.1.0
+    depends_on:
+      - redis
+    environment:
+      REDIS_HOST: redis
+    healthcheck:
+      test: ["CMD", "curl", "-H", "X-INSTANA-SYNTHETIC: 1", "-f", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 12

@@ -6,35 +6,31 @@
 
 ## Abstract
 
-Broken Docker Compose environments are usually repaired by ad-hoc shell commands or by large language model (LLM) coding agents that can mutate arbitrary state. We present DockRepair, a small deterministic planner that inspects live Compose state into symbolic facts, searches a deny-by-default action catalog with lexicographic uniform-cost search, and executes one action at a time with live re-inspection and replan. On seven local Compose fault scenarios we compare DockRepair against (i) a dependency-blind planner that uses the same action catalog and (ii) OpenAI Codex (`codex exec`, model `gpt-5.6-terra`) under an identical no-file-edit safety prompt. All three arms repaired every scenario. DockRepair matched Codex success at roughly one-quarter the mean wall-clock time, used fewer mutating actions than the naive baseline on dependency chains, and never edited Compose files by construction. We argue that constrained symbolic repair is a practical, reproducible complement to unbounded LLM ops agents when latency, auditability, and safety matter.
+Ad-hoc `docker compose up` and LLM coding agents both repair broken Compose stacks, but the former misses adaptive faults and the latter is slow and unbounded. DockRepair is a small deterministic planner: it inspects live Compose state into symbolic facts, searches a deny-by-default action catalog with lexicographic uniform-cost search, and executes one action at a time with live re-inspection and replan. We evaluate four arms on eight opaque faults (seven synthetic fixtures plus a Robot Shop cart slice): blind `compose up --wait`, a dependency-blind naive planner, DockRepair, and Codex (`gpt-5.6-terra`). Blind `up` repairs only 5/8 cases. DockRepair, the naive planner, and Codex all reach 8/8. DockRepair matches that success at about one-quarter Codex wall-clock (12.0s vs 49.2s mean), uses fewer mutations than the naive arm on dependency chains, and cannot edit project files by construction. Constrained symbolic repair is a practical latency and safety layer beside unbounded LLM ops agents.
 
 ## I. Introduction
 
 Docker Compose is the default local orchestration tool for multi-service applications. When stacks drift—stopped dependents, unhealthy healthchecks, config-hash mismatch—operators typically run `docker compose up` or hand-written scripts. Frontier coding agents can repair such environments, but they are non-deterministic, may edit project files, and offer weak guarantees about what they will touch.
 
-DockRepair asks a narrower question: can a *deny-by-default symbolic planner* with Compose dependency knowledge match LLM repair success on common live faults while improving wall-clock cost, mutation count, and safety bounds?
+DockRepair asks: can a deny-by-default symbolic planner with Compose dependency knowledge (1) beat blind `compose up` on adaptive faults, (2) match a frontier agent on success under opaque injection, and (3) win on wall-clock and mutation efficiency?
 
-**Contributions.** (1) A complete inspect–plan–execute–replan loop over Compose facts with lexicographic costs prioritizing data risk. (2) An automated bakeoff harness comparing DockRepair, a naive same-catalog baseline, and Codex. (3) Empirical results on seven synthetic but realistic fault classes.
+**Contributions.** (1) Inspect–plan–execute–replan over Compose facts with lexicographic costs prioritizing data risk. (2) A four-arm bakeoff with opaque fault injection. (3) Results on eight scenarios including one real-image Robot Shop cart slice.
 
-We do **not** claim image-layer DAG recovery, Kubernetes support, or multi-replica repair. The domain is single-replica Compose service-state repair.
+We do **not** claim image-layer DAG recovery, Kubernetes support, or multi-replica repair.
 
 ## II. System
 
 ### A. Facts and goals
 
-DockRepair reads normalized `docker compose config` plus live containers, networks, volumes, mounts, ports, and health. State is a set of string facts such as `running:api`, `healthy:database`, `network_connected:app:default`, and `completed_successfully:migrate`. The goal is the fact set implied by the Compose file (running/healthy/current services, declared ports, optional readiness probes).
+DockRepair reads normalized `docker compose config` plus live containers, networks, volumes, mounts, ports, and health into string facts (`running:api`, `healthy:database`, …). The goal is the fact set implied by the Compose file.
 
 ### B. Action catalog and safety
 
-Candidate edges are parameterized operators: batch or individual reconcile, start/restart/recreate, create network/volume, connect network, run/rerun completion jobs, and observation edges (`verify_health`, `verify_readiness`, `verify_completion`). A deny-by-default validator admits only cataloged, project-scoped mutations. The catalog contains no volume deletion, foreign-container mutation, foreign-port eviction, or file edit. Missing binds, missing external resources, and foreign port conflicts are hard blockers.
+Operators include batch/individual reconcile, start/restart/recreate, resource create/connect, completion jobs, and observation edges. A deny-by-default validator admits only cataloged, project-scoped mutations—no deletes, foreign mutations, port eviction, or file edits. Missing binds, external resources, and foreign port conflicts are hard blockers.
 
-### C. Search and cost
+### C. Search, cost, execute
 
-Search is lexicographic uniform-cost search over reachable fact sets. Cost is the vector `(data-risk, destructiveness, disruption, actions)`. Lower data risk always beats fewer actions. These are policy priorities, not latency estimates.
-
-### D. Execute and replan
-
-Execution runs only the first planned edge, recollects live state, and verifies predicted effects. Failed or unverified edges are excluded for that observed state so search can fall back (e.g., restart → recreate). The loop ends when the live goal is observed or the action budget is exhausted.
+Lexicographic UCS minimizes `(data-risk, destructiveness, disruption, actions)`. Execution runs only the first planned edge, recollects live state, verifies effects, and excludes failed edges so search can fall back (restart → recreate).
 
 ```
 Compose + live Docker
@@ -46,77 +42,80 @@ Compose + live Docker
         +--------- re-inspect / exclude ----+
 ```
 
-Figure 1. DockRepair control loop: observe, plan, mutate once, replan.
+Figure 1. DockRepair control loop.
 
 ## III. Evaluation
 
 ### A. Protocol
 
-Each trial: (1) recreate a broken fixture (untimed), (2) run one arm under wall-clock timing, (3) independently verify the live goal, (4) recreate the identical fault for the next arm. Arm order is randomized per repetition. Codex receives only the Compose path and a safety prompt forbidding file edits and foreign mutations; it cannot see fault scripts, scenario labels, or DockRepair's plan. Compose file hashes are checked after the Codex arm.
+Each trial: recreate an opaque broken environment (untimed), run one arm under wall-clock timing, verify the live DockRepair goal **and** unchanged Compose file hashes, then recreate the fault for the next arm. Arm order is randomized. Fault recipes are not written into tracked Compose YAML for adaptive cases; sabotage scripts live under `~/.dockrepair-bench/` and bind-mount at runtime. Codex receives only the Compose path and a no-file-edit safety prompt.
 
-**Arms.** `planner` (DockRepair), `naive` (same catalog; ignores `depends_on`-style preconditions and never proposes batch reconcile), `codex` (`codex exec --ephemeral`, model `gpt-5.6-terra`).
+**Arms.** `compose_up` (`docker compose up -d --wait`); `naive` (same catalog, ignores `depends_on`-style preconditions, no batch reconcile); `planner` (DockRepair); `codex` (`codex exec --ephemeral`, model `gpt-5.6-terra`).
 
-**Scenarios.** unhealthy; recreate-fallback; flaky-start; stopped-chain; partial-stop; missing-service; config-drift.
+**Scenarios.** stopped-chain; partial-stop; missing-service; config-drift; unhealthy; recreate-fallback; flaky-start; robot-shop-stop-cart (public `robotshop/rs-cart:2.1.0` + Redis).
 
-**Metrics.** Success (goal facts observed), wall-clock seconds, mutating action count (planner arms), confirmed Compose edits (hash check).
+**Metrics.** Success (goal facts + hashes); wall-clock seconds; mutating actions (planner arms; observations excluded).
 
 ### B. Results
 
-One repetition per scenario (seed 2); Colima Docker Engine on macOS arm64. Full machine-readable summary: `paper/results_summary.json`.
+One repetition per scenario (seed 3); Colima Docker on macOS arm64. Summary: `paper/results_summary.json`.
 
-**Table I. Aggregate (n=7 scenarios).**
+**Table I. Aggregate (n=8).**
 
-| Arm | Success | Mean wall-clock (s) | Mean mutating actions | Confirmed Compose edits |
-|-----|---------|---------------------|-----------------------|-------------------------|
-| planner | 7/7 (100%) | 13.16 | 1.86 | 0 |
-| naive | 7/7 (100%) | 12.73 | 2.29 | 0 |
-| codex | 7/7 (100%) | 49.11 | — (LLM) | 0 |
+| Arm | Success | Mean wall-clock (s) | Mean mutating actions | Compose edits |
+|-----|---------|---------------------|-----------------------|---------------|
+| compose_up | 5/8 (62.5%) | 3.16 | 1.0 | 0 |
+| naive | 8/8 (100%) | 12.23 | 1.50 | 0 |
+| planner | 8/8 (100%) | 12.01 | 1.38 | 0 |
+| codex | 8/8 (100%) | 49.22 | — | 0 |
 
-**Table II. Wall-clock seconds by scenario.**
+**Table II. Success and wall-clock by scenario.**
 
-| Scenario | planner | naive | codex |
-|----------|---------|-------|-------|
-| unhealthy | 12.66 | 12.25 | 66.94 |
-| recreate-fallback | 56.44 | 53.65 | 73.36 |
-| flaky-start | 4.42 | 4.20 | 52.23 |
-| stopped-chain | 4.77 | 5.56 | 38.33 |
-| partial-stop | 1.19 | 1.00 | 22.91 |
-| missing-service | 1.38 | 1.23 | 42.54 |
-| config-drift | 11.23 | 11.19 | 47.47 |
+| Scenario | up | naive | planner | codex |
+|----------|----|-------|---------|-------|
+| stopped-chain | Y 4.0s | Y 6.2s | Y 4.8s | Y 43.6s |
+| partial-stop | Y 0.8s | Y 1.3s | Y 1.1s | Y 27.5s |
+| missing-service | Y 0.8s | Y 1.1s | Y 1.3s | Y 35.6s |
+| config-drift | Y 11.8s | Y 11.5s | Y 11.4s | Y 42.7s |
+| unhealthy | N 0.6s | Y 12.9s | Y 12.4s | Y 54.6s |
+| recreate-fallback | N 0.7s | Y 54.6s | Y 54.7s | Y 76.7s |
+| flaky-start | N 0.7s | Y 4.3s | Y 4.5s | Y 78.9s |
+| robot-shop-stop-cart | Y 5.8s | Y 5.9s | Y 5.9s | Y 34.2s |
 
 **Table III. Mutating actions (planner arms).**
 
 | Scenario | planner | naive |
 |----------|---------|-------|
-| unhealthy | 2 | 2 |
-| recreate-fallback | 3 | 4 |
-| flaky-start | 4 | 4 |
-| stopped-chain | 1 | 3 |
+| stopped-chain | 1 | 2 |
 | partial-stop | 1 | 1 |
 | missing-service | 1 | 1 |
 | config-drift | 1 | 1 |
+| unhealthy | 1 | 1 |
+| recreate-fallback | 2 | 2 |
+| flaky-start | 3 | 3 |
+| robot-shop-stop-cart | 1 | 1 |
 
 ### C. Findings
 
-**Latency vs Codex.** DockRepair matched Codex success with mean wall-clock 13.2s vs 49.1s (~3.7×). Every scenario was faster under DockRepair than under Codex.
+**Blind `up` is not enough.** It fails unhealthy, recreate-fallback, and flaky-start—the adaptive cases that need restart/recreate fallback or inspect-and-replan.
 
-**Dependency ablation.** On `stopped-chain`, DockRepair used one batch reconcile (1 mutation) while the naive arm needed 3 single-service mutations. On `recreate-fallback`, both arms fell back from restart to recreate; naive spent one extra failed mutation (4 vs 3).
+**Latency vs Codex.** DockRepair matches 8/8 success at 12.0s mean vs 49.2s (~4.1×). Every scenario is faster under DockRepair than under Codex.
 
-**Safety.** Planner arms cannot edit files. Codex repaired under the no-edit prompt and left Compose hashes unchanged on all seven trials; success therefore did not require file mutation, but Codex remains unbounded outside the prompt.
+**Dependency ablation.** On stopped-chain, DockRepair uses one batch reconcile (1 mutation) vs 2 for naive. Overall mean mutations 1.38 vs 1.50.
 
-**Tied success.** These synthetic fixtures do not separate the arms on reliability. The measured advantages are latency, mutation efficiency on dependency-aware cases, and safety-by-construction.
+**Safety.** Planner arms cannot edit files. Codex left Compose hashes unchanged on all eight trials under the safety prompt, but remains unbounded outside that prompt.
 
 ## IV. Related Work
 
-Compose itself provides reconciliation (`up --wait`) but does not search alternative repair paths under a safety cost policy. Classical AI planning (STRIPS/PDDL, UCS/A*) motivates our fact/action encoding. Recent LLM ops / coding agents demonstrate strong repair ability with weak formal bounds; our bakeoff treats Codex as a strong but unbounded baseline under matched task constraints. Self-healing Kubernetes operators address a richer control plane outside this paper's Compose scope.
+Compose reconciliation (`up --wait`) handles many stopped/missing cases but not the adaptive failures above. Classical planning (STRIPS/UCS) motivates the fact/action encoding. LLM ops agents are strong but weakly bounded; we treat Codex as that baseline under matched constraints. Full-stack sample apps (Robot Shop, retail-store, light-oauth2) remain useful for broader future suites.
 
 ## V. Limitations
 
-DockRepair supports exactly one container per Compose service. Multi-replica and Swarm/Kubernetes are out of scope. Hard blockers are refused rather than repaired. Costs are policy, not latency. Fixtures are synthetic busybox stacks; external multi-service apps (e.g., Robot Shop) remain future work. We report a single repetition per scenario under a conference deadline; Codex variance across seeds is not characterized. LLM mutation counts from transcripts are unreliable, so Table I omits them for Codex.
+Single-replica Compose only. Hard blockers refused. Costs are policy, not latency. Goal oracle is DockRepair's fact model. n=1. Adaptive sabotage scripts live on the host bind-mount (not in tracked YAML), but a sufficiently thorough agent could still inspect mounted files. Robot Shop case is a cart+Redis slice, not the full multi-service demo (shipping was unhealthy on our arm64 VM). LLM mutation counts omitted (unreliable from transcripts).
 
 ## VI. Conclusion
 
-DockRepair shows that a small deny-by-default symbolic planner with dependency-aware UCS and live replan can match a frontier coding agent on common Compose faults while cutting wall-clock time and bounding the mutation surface. Dependency knowledge reduces mutations on multi-service chains relative to a same-catalog naive baseline. Constrained symbolic repair is a practical safety and latency layer beside LLM ops agents.
+DockRepair shows that deny-by-default symbolic Compose repair with dependency-aware UCS and live replan beats blind `compose up` on adaptive faults, matches a frontier coding agent on opaque scenarios, and cuts wall-clock by about 4× while bounding the mutation surface. Dependency knowledge trims mutations on multi-service chains versus a same-catalog naive baseline.
 
 ## Acknowledgments
 

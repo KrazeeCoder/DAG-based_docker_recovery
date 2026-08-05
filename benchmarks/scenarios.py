@@ -1,8 +1,9 @@
-"""Local Compose fault fixtures for the bakeoff."""
+"""Local and external Compose fault fixtures for the bakeoff."""
 
 from __future__ import annotations
 
 import hashlib
+import os
 import subprocess
 import sys
 import time
@@ -19,6 +20,7 @@ from dockrepair_docker import collect_environment  # noqa: E402
 from dockrepair_planner import build_goal  # noqa: E402
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
+STATE_ROOT = Path.home() / ".dockrepair-bench"
 
 
 @dataclass(frozen=True)
@@ -30,15 +32,15 @@ class Scenario:
     extra_files: tuple[Path, ...] = ()
 
 
-def run(arguments, *, check=True, quiet=False):
+def run(arguments, *, check=True, quiet=False, cwd=None):
     result = subprocess.run(
         arguments,
-        cwd=ROOT,
+        cwd=cwd or ROOT,
         capture_output=quiet,
         text=True,
         encoding="utf-8",
         errors="replace",
-        timeout=180,
+        timeout=600,
     )
     if check and result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
@@ -97,6 +99,15 @@ def assert_files_unchanged(expected):
         raise RuntimeError("Compose file changed during repair")
 
 
+def _write_state_script(name, body):
+    directory = STATE_ROOT / name
+    directory.mkdir(parents=True, exist_ok=True)
+    script = directory / "run.sh"
+    script.write_text(body, encoding="utf-8")
+    script.chmod(0o755)
+    return directory
+
+
 def setup_stopped_chain(scenario):
     clean_project(scenario.compose_file)
     compose(scenario.compose_file, "up", "-d", "--wait", "--wait-timeout", "30", quiet=True)
@@ -133,6 +144,14 @@ def setup_unhealthy(scenario):
 
 
 def setup_recreate_fallback(scenario):
+    _write_state_script(
+        "recreate_fallback",
+        "#!/bin/sh\n"
+        "if [ ! -f /tmp/corrupt ]; then\n"
+        "  touch /tmp/healthy\n"
+        "fi\n"
+        "while true; do sleep 3600; done\n",
+    )
     clean_project(scenario.compose_file)
     compose(scenario.compose_file, "up", "-d", "--wait", "--wait-timeout", "30", quiet=True)
     container_id = compose(scenario.compose_file, "ps", "-q", "cache", quiet=True).stdout.strip()
@@ -146,8 +165,26 @@ def setup_recreate_fallback(scenario):
 
 
 def setup_flaky_start(scenario):
+    _write_state_script(
+        "flaky_start",
+        "#!/bin/sh\n"
+        "if [ ! -f /tmp/first_start_failed ]; then\n"
+        "  touch /tmp/first_start_failed\n"
+        "  exit 1\n"
+        "fi\n"
+        "while true; do sleep 3600; done\n",
+    )
     clean_project(scenario.compose_file)
     compose(scenario.compose_file, "create", quiet=True)
+
+
+def setup_robot_shop_stop_cart(scenario):
+    clean_project(scenario.compose_file)
+    compose(
+        scenario.compose_file, "up", "-d", "--wait", "--wait-timeout", "180",
+        quiet=False,
+    )
+    compose(scenario.compose_file, "stop", "cart", quiet=True)
 
 
 SCENARIOS = {
@@ -193,5 +230,11 @@ SCENARIOS = {
         "first start fails, second succeeds",
         FIXTURES / "flaky_start" / "compose.yaml",
         setup_flaky_start,
+    ),
+    "robot-shop-stop-cart": Scenario(
+        "robot-shop-stop-cart",
+        "real Robot Shop cart image stopped",
+        FIXTURES / "robot_cart" / "compose.yaml",
+        setup_robot_shop_stop_cart,
     ),
 }
