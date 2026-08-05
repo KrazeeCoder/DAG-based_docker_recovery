@@ -1,9 +1,3 @@
-"""Command-line entry point for planning or executing Compose repairs.
-
-main() is the starting point. It collects Docker state, calls planner.search(),
-then either prints the returned plan or executes one action at a time.
-"""
-
 import argparse
 import os
 import shutil
