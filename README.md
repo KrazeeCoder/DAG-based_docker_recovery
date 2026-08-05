@@ -1,6 +1,6 @@
 # dockrepair
 
-This is a deliberately small Docker Compose repair example. It reads the current
+ It reads the current
 environment, searches for a low-cost sequence of symbolic actions, and can either
 print the plan or execute it. Execution re-inspects Docker after every action and
 finishes only when the goal is observed in the live environment.

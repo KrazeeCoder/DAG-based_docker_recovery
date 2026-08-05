@@ -121,7 +121,10 @@ def _start_docker_engine(timeout):
         launcher = [str(desktop)] if desktop.is_file() else None
     elif sys.platform == "darwin":
         desktop = Path("/Applications/Docker.app/Contents/MacOS/Docker")
-        launcher = [str(desktop)] if desktop.is_file() else None
+        if desktop.is_file():
+            launcher = [str(desktop)]
+        elif shutil.which("colima"):
+            launcher = ["colima", "start"]
     elif shutil.which("systemctl"):
         launcher = ["systemctl", "start", "docker"]
     if not launcher:
