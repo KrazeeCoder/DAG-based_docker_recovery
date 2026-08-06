@@ -120,6 +120,43 @@ while `--health-timeout` bounds polling for both Docker health and application
 readiness. A failed readiness observation makes restart and then recreation
 available as fallback paths.
 
+## Active service-dependency diagnosis
+
+A caller can declare a TCP contract to another Compose service:
+
+```yaml
+services:
+  api:
+    labels:
+      com.dockrepair.contract.primary-db: "tcp://database:5432"
+  database:
+    labels:
+      com.dockrepair.repair.recreate: "true"
+```
+
+The URL must be `tcp://DECLARED_SERVICE:PORT`, and caller and target must share a
+declared Compose network. `com.dockrepair.contract-timeout` optionally sets the
+caller's probe timeout. Recreation requires the target's explicit
+`com.dockrepair.repair.recreate=true` label.
+
+DockRepair checks lifecycle and declared network attachments before running
+bounded DNS, caller-to-target TCP, and target-local listener probes. It uses a
+locally available BusyBox image in an ephemeral, read-only, resource-limited
+container with no mounts and no capabilities. It never pulls this image itself:
+
+```powershell
+docker pull busybox:1.36.1
+$env:PYTHONPATH = "src"
+py -3.11 -m dockrepair -f .\compose.yaml --probe-image busybox:1.36.1
+```
+
+Add `--execute` for bounded repair and `--report-json .\incident.json` for a
+structured report. Dependency mode can start/reconcile unavailable services,
+restore declared network attachments, restart a proven closed listener once,
+create a missing project-owned declared network, and perform one opt-in recreation.
+DNS/path faults and failures beyond a working
+TCP connection are reported without mutation.
+
 ## Run it
 
 ```powershell

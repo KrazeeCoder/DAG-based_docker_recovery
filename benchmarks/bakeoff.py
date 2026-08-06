@@ -35,7 +35,9 @@ from scenarios import (  # noqa: E402
 RESULTS_DIR = HERE / "results"
 RESULTS_FILE = RESULTS_DIR / "bakeoff_results.json"
 ARMS = ("compose_up", "naive", "planner", "codex")
-DEFAULT_SCENARIOS = tuple(SCENARIOS)
+DEFAULT_SCENARIOS = tuple(
+    name for name, scenario in SCENARIOS.items() if scenario.expected_diagnosis is None
+)
 CODEX_MODEL = os.environ.get("DOCKREPAIR_CODEX_MODEL", "gpt-5.6-terra")
 CODEX_PROMPT = (
     "Do not edit, create, or delete any project files (including Compose YAML). "

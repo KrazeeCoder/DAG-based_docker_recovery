@@ -1,6 +1,7 @@
 """Read Docker and Compose state without mutating it."""
 
 import json
+import math
 import os
 import re
 import shlex
@@ -14,6 +15,7 @@ from pathlib import Path
 
 from dockrepair_data import (
     Container,
+    DependencyContract,
     Environment,
     Mount,
     Port,
@@ -174,6 +176,68 @@ def _readiness(service):
     except (TypeError, ValueError):
         timeout = 2.0
     return ReadinessProbe(url, frozenset(statuses), timeout)
+
+
+def _allow_recreate(service):
+    value = _labels(service).get("com.dockrepair.repair.recreate", "false")
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _dependency_contracts(service_configs, services):
+    prefix = "com.dockrepair.contract."
+    contracts = []
+    errors = []
+    for caller, raw_service in sorted(service_configs.items()):
+        labels = _labels(raw_service)
+        raw_timeout = labels.get("com.dockrepair.contract-timeout", "2")
+        try:
+            parsed_timeout = float(raw_timeout)
+            if not math.isfinite(parsed_timeout):
+                raise ValueError("timeout must be finite")
+            timeout = max(0.1, parsed_timeout)
+        except (TypeError, ValueError):
+            timeout = 2.0
+            errors.append(
+                f"Service '{caller}' has an invalid dependency-contract timeout; using 2 seconds."
+            )
+        for label, value in sorted(labels.items()):
+            if not label.startswith(prefix):
+                continue
+            identifier = label[len(prefix):].strip()
+            parsed = urllib.parse.urlparse(value.strip())
+            try:
+                port = parsed.port
+            except ValueError:
+                port = None
+            raw_target = parsed.hostname or ""
+            target = next(
+                (name for name in services if name.lower() == raw_target.lower()), raw_target,
+            )
+            if (
+                not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", identifier or "")
+                or parsed.scheme.lower() != "tcp" or not target or not port
+                or parsed.username or parsed.password or parsed.path not in ("", "/")
+                or parsed.query or parsed.fragment
+            ):
+                errors.append(
+                    f"Service '{caller}' contract '{identifier or label}' must be tcp://SERVICE:PORT."
+                )
+                continue
+            if target not in services:
+                errors.append(
+                    f"Service '{caller}' contract '{identifier}' targets undeclared service '{target}'."
+                )
+                continue
+            shared = tuple(sorted(set(services[caller].networks) & set(services[target].networks)))
+            if not shared:
+                errors.append(
+                    f"Service '{caller}' contract '{identifier}' has no declared network shared with '{target}'."
+                )
+                continue
+            contracts.append(DependencyContract(
+                identifier, caller, target, int(port), timeout, shared,
+            ))
+    return tuple(contracts), tuple(errors)
 
 
 def _bind_source_exists(source):
@@ -398,13 +462,20 @@ def collect_environment(compose_file):
             _readiness(service),
             name in completion_services,
             _desired_replicas(service),
+            _allow_recreate(service),
         )
         for name, service in sorted(service_configs.items())
     }
 
+    contracts, contract_errors = _dependency_contracts(service_configs, services)
+
     facts = {"compose_valid"}
     errors = [hash_error] if hash_error else []
-    blocked = []
+    blocked = list(contract_errors)
+    for contract in contracts:
+        facts.add(f"contract_declared:{contract.key}")
+        for network in contract.shared_networks:
+            facts.add(f"contract_network_declared:{contract.key}:{network}")
     supported_conditions = {
         "service_started", "service_healthy", "service_completed_successfully",
     }
@@ -541,6 +612,9 @@ def collect_environment(compose_file):
         facts.update(_completion_facts(name, service, containers[name]))
         if containers[name].oom_killed:
             facts.add(f"oom_killed:{name}")
+        if containers[name].exit_code is not None:
+            facts.add(f"exit_code:{name}:{containers[name].exit_code}")
+        facts.add(f"restart_count:{name}:{containers[name].restart_count}")
         if containers[name].running and health == "healthy":
             facts.add(f"healthy:{name}")
         elif containers[name].running and health == "unhealthy":
@@ -560,8 +634,21 @@ def collect_environment(compose_file):
             else:
                 facts.add(f"readiness_pending:{name}")
 
+    for contract in contracts:
+        caller = containers.get(contract.caller)
+        target = containers.get(contract.target)
+        if not caller or not target:
+            continue
+        for network in contract.shared_networks:
+            if network in caller.networks and network in target.networks:
+                facts.add(f"contract_network_observed:{contract.key}:{network}")
+            if network not in caller.networks:
+                facts.add(f"caller_network_missing:{contract.key}:{network}")
+            if network not in target.networks:
+                facts.add(f"target_network_missing:{contract.key}:{network}")
+
     return Environment(
         str(path), project_name, services, frozenset(facts), tuple(dict.fromkeys(errors)),
         containers, networks, volumes, existing_networks, existing_volumes,
-        tuple(sorted(conflicts)), tuple(dict.fromkeys(blocked)),
+        tuple(sorted(conflicts)), tuple(dict.fromkeys(blocked)), contracts,
     )

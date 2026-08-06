@@ -51,6 +51,55 @@ class ReadinessProbe:
 
 
 @dataclass(frozen=True)
+class DependencyContract:
+    """A caller-visible TCP dependency declared by a Compose service label."""
+
+    identifier: str
+    caller: str
+    target: str
+    port: int
+    timeout: float = 2.0
+    shared_networks: tuple[str, ...] = ()
+
+    @property
+    def key(self):
+        return f"{self.caller}:{self.identifier}"
+
+
+@dataclass(frozen=True)
+class ProbeObservation:
+    contract_key: str
+    probe: str
+    outcome: str
+    facts: frozenset[str]
+    evidence: str
+
+
+@dataclass(frozen=True)
+class Diagnosis:
+    contract_key: str
+    code: str
+    certainty: str
+    locus: str
+    repairable: bool
+    evidence: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class IncidentReport:
+    status: str
+    project: str
+    diagnoses: tuple[Diagnosis, ...] = ()
+    probes: tuple[ProbeObservation, ...] = ()
+    mutations: tuple[str, ...] = ()
+    rejected_actions: tuple[str, ...] = ()
+    verified_contracts: tuple[str, ...] = ()
+    evidence: tuple[str, ...] = ()
+    observed_facts: tuple[str, ...] = ()
+    mutated_services: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class Mount:
     source: str
     target: str
@@ -79,6 +128,7 @@ class Service:
     readiness: ReadinessProbe | None = None
     completion_required: bool = False
     desired_replicas: int = 1
+    allow_recreate: bool = False
 
 
 @dataclass(frozen=True)
@@ -114,6 +164,7 @@ class Environment:
     existing_volumes: frozenset[str] = frozenset()
     port_conflicts: tuple[str, ...] = ()
     blocked_reasons: tuple[str, ...] = ()
+    contracts: tuple[DependencyContract, ...] = ()
 
     @property
     def daemon_reachable(self):

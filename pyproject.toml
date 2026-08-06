@@ -17,4 +17,4 @@ dockrepair = "dockrepair:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
-py-modules = ["dockrepair", "dockrepair_data", "dockrepair_docker", "dockrepair_planner"]
+py-modules = ["dockrepair", "dockrepair_data", "dockrepair_diagnosis", "dockrepair_docker", "dockrepair_planner"]

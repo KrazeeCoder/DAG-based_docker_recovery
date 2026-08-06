@@ -16,11 +16,13 @@ SRC = ROOT / "src"
 sys.path.insert(0, str(SRC))
 
 from dockrepair import _start_docker_engine  # noqa: E402
+from dockrepair_diagnosis import diagnose_environment  # noqa: E402
 from dockrepair_docker import collect_environment  # noqa: E402
 from dockrepair_planner import build_goal  # noqa: E402
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 STATE_ROOT = Path.home() / ".dockrepair-bench"
+os.environ.setdefault("DOCKREPAIR_BENCH_STATE", str(STATE_ROOT))
 
 
 @dataclass(frozen=True)
@@ -30,6 +32,9 @@ class Scenario:
     compose_file: Path
     setup: Callable[["Scenario"], None]
     extra_files: tuple[Path, ...] = ()
+    expected_diagnosis: str | None = None
+    repair_expected: bool = True
+    abstention_mutation_budget: int = 0
 
 
 def run(arguments, *, check=True, quiet=False, cwd=None):
@@ -74,6 +79,12 @@ def wait_for_fact(path, wanted, timeout):
 def inspect_goal(path):
     environment = collect_environment(str(path))
     missing = sorted(build_goal(environment) - environment.facts)
+    if environment.contracts:
+        diagnoses, _, _ = diagnose_environment(environment)
+        missing.extend(
+            f"contract_satisfied:{item.contract_key}"
+            for item in diagnoses if item.code != "CONTRACT_HEALTHY"
+        )
     return not missing, missing, environment.errors
 
 
@@ -187,7 +198,184 @@ def setup_robot_shop_stop_cart(scenario):
     compose(scenario.compose_file, "stop", "cart", quiet=True)
 
 
+def setup_dependency_target_stop(scenario):
+    clean_project(scenario.compose_file)
+    compose(scenario.compose_file, "up", "-d", "--wait", "--wait-timeout", "30", quiet=True)
+    compose(scenario.compose_file, "stop", "database", quiet=True)
+
+
+def setup_dependency_target_missing(scenario):
+    clean_project(scenario.compose_file)
+    compose(scenario.compose_file, "up", "-d", "--wait", "--wait-timeout", "30", quiet=True)
+    compose(scenario.compose_file, "rm", "-s", "-f", "database", quiet=True)
+
+
+def setup_dependency_caller_network_drift(scenario):
+    clean_project(scenario.compose_file)
+    compose(scenario.compose_file, "up", "-d", "--wait", "--wait-timeout", "30", quiet=True)
+    environment = collect_environment(str(scenario.compose_file))
+    caller = environment.containers["api"]
+    network = environment.networks["backend"]
+    run(["docker", "network", "disconnect", network.actual_name, caller.container_id], quiet=True)
+
+
+def setup_dependency_target_network_drift(scenario):
+    clean_project(scenario.compose_file)
+    compose(scenario.compose_file, "up", "-d", "--wait", "--wait-timeout", "30", quiet=True)
+    environment = collect_environment(str(scenario.compose_file))
+    target = environment.containers["database"]
+    network = environment.networks["backend"]
+    run(["docker", "network", "disconnect", network.actual_name, target.container_id], quiet=True)
+
+
+def setup_dependency_listener_closed(scenario):
+    clean_project(scenario.compose_file)
+    compose(scenario.compose_file, "up", "-d", "--wait", "--wait-timeout", "30", quiet=True)
+    container_id = compose(scenario.compose_file, "ps", "-q", "database", quiet=True).stdout.strip()
+    run(["docker", "exec", container_id, "killall", "httpd"], quiet=True)
+    time.sleep(1)
+
+
+def setup_dependency_dns_failure(scenario):
+    clean_project(scenario.compose_file)
+    compose(scenario.compose_file, "up", "-d", "--wait", "--wait-timeout", "30", quiet=True)
+    environment = collect_environment(str(scenario.compose_file))
+    target = environment.containers["database"]
+    network = environment.networks["backend"]
+    run(["docker", "network", "disconnect", network.actual_name, target.container_id], quiet=True)
+    # Raw reattachment restores topology but omits Compose's service-name alias.
+    run(["docker", "network", "connect", network.actual_name, target.container_id], quiet=True)
+
+
+def setup_dependency_combined(scenario):
+    setup_dependency_caller_network_drift(scenario)
+    compose(scenario.compose_file, "stop", "database", quiet=True)
+
+
+def setup_declared_failure(scenario):
+    clean_project(scenario.compose_file)
+    compose(scenario.compose_file, "up", "-d", check=False, quiet=True)
+    time.sleep(2)
+
+
+def setup_dependency_persistent_listener(scenario):
+    state = STATE_ROOT / "dependency_persistent"
+    state.mkdir(parents=True, exist_ok=True)
+    marker = state / "broken"
+    marker.unlink(missing_ok=True)
+    clean_project(scenario.compose_file)
+    compose(scenario.compose_file, "up", "-d", "--wait", "--wait-timeout", "30", quiet=True)
+    marker.write_text("persistent listener failure\n", encoding="utf-8")
+    container_id = compose(scenario.compose_file, "ps", "-q", "database", quiet=True).stdout.strip()
+    run(["docker", "exec", container_id, "killall", "httpd"], quiet=True)
+    time.sleep(1)
+
+
+def setup_dependency_oom(scenario):
+    clean_project(scenario.compose_file)
+    compose(scenario.compose_file, "up", "-d", check=False, quiet=True)
+    wait_for_fact(scenario.compose_file, "oom_killed:database", timeout=30)
+
+
+def setup_robot_shop_stop_redis(scenario):
+    clean_project(scenario.compose_file)
+    compose(scenario.compose_file, "up", "-d", "--wait", "--wait-timeout", "180", quiet=False)
+    compose(scenario.compose_file, "stop", "redis", quiet=True)
+
+
 SCENARIOS = {
+    "dependency-target-stop": Scenario(
+        "dependency-target-stop",
+        "declared TCP dependency target stopped",
+        FIXTURES / "dependency_contract" / "compose.yaml",
+        setup_dependency_target_stop,
+        expected_diagnosis="TARGET_UNAVAILABLE",
+    ),
+    "dependency-target-missing": Scenario(
+        "dependency-target-missing",
+        "declared TCP dependency target container removed",
+        FIXTURES / "dependency_contract" / "compose.yaml",
+        setup_dependency_target_missing,
+        expected_diagnosis="TARGET_UNAVAILABLE",
+    ),
+    "dependency-caller-network": Scenario(
+        "dependency-caller-network",
+        "caller detached from a declared shared network",
+        FIXTURES / "dependency_contract" / "compose.yaml",
+        setup_dependency_caller_network_drift,
+        expected_diagnosis="CALLER_NETWORK_DRIFT",
+    ),
+    "dependency-target-network": Scenario(
+        "dependency-target-network",
+        "target detached from a declared shared network",
+        FIXTURES / "dependency_contract" / "compose.yaml",
+        setup_dependency_target_network_drift,
+        expected_diagnosis="TARGET_NETWORK_DRIFT",
+    ),
+    "dependency-listener-closed": Scenario(
+        "dependency-listener-closed",
+        "target runs but declared TCP listener is closed",
+        FIXTURES / "dependency_contract" / "compose.yaml",
+        setup_dependency_listener_closed,
+        expected_diagnosis="TARGET_NOT_LISTENING",
+    ),
+    "dependency-dns-failure": Scenario(
+        "dependency-dns-failure",
+        "declared topology is present but the target service alias is absent",
+        FIXTURES / "dependency_contract" / "compose.yaml",
+        setup_dependency_dns_failure,
+        expected_diagnosis="DNS_FAILURE",
+        repair_expected=False,
+    ),
+    "dependency-combined": Scenario(
+        "dependency-combined",
+        "target stopped while caller is detached from the shared network",
+        FIXTURES / "dependency_contract" / "compose.yaml",
+        setup_dependency_combined,
+        expected_diagnosis="TARGET_UNAVAILABLE",
+    ),
+    "dependency-wrong-port": Scenario(
+        "dependency-wrong-port",
+        "declared target port has no listener",
+        FIXTURES / "dependency_wrong_port" / "compose.yaml",
+        setup_declared_failure,
+        expected_diagnosis="TARGET_NOT_LISTENING",
+        repair_expected=False,
+        abstention_mutation_budget=2,
+    ),
+    "dependency-application": Scenario(
+        "dependency-application",
+        "TCP dependency works but caller application readiness fails",
+        FIXTURES / "dependency_application" / "compose.yaml",
+        setup_declared_failure,
+        expected_diagnosis="APPLICATION_OR_UNKNOWN",
+        repair_expected=False,
+    ),
+    "dependency-persistent-listener": Scenario(
+        "dependency-persistent-listener",
+        "declared listener remains closed after bounded restart and recreation",
+        FIXTURES / "dependency_persistent" / "compose.yaml",
+        setup_dependency_persistent_listener,
+        expected_diagnosis="TARGET_NOT_LISTENING",
+        repair_expected=False,
+        abstention_mutation_budget=2,
+    ),
+    "dependency-oom": Scenario(
+        "dependency-oom",
+        "dependency repeatedly terminates after an OOM kill",
+        FIXTURES / "dependency_oom" / "compose.yaml",
+        setup_dependency_oom,
+        expected_diagnosis="TARGET_OOM_KILLED",
+        repair_expected=False,
+        abstention_mutation_budget=1,
+    ),
+    "dependency-robot-redis": Scenario(
+        "dependency-robot-redis",
+        "held-out Robot Shop cart-to-Redis dependency stopped",
+        FIXTURES / "robot_cart" / "compose.yaml",
+        setup_robot_shop_stop_redis,
+        expected_diagnosis="TARGET_UNAVAILABLE",
+    ),
     "stopped-chain": Scenario(
         "stopped-chain",
         "stopped dependency chain",

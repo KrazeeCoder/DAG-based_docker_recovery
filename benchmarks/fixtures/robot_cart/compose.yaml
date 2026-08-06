@@ -8,6 +8,8 @@ services:
     image: redis:6.2-alpine
   cart:
     image: robotshop/rs-cart:2.1.0
+    labels:
+      com.dockrepair.contract.redis-store: "tcp://redis:6379"
     depends_on:
       - redis
     environment:

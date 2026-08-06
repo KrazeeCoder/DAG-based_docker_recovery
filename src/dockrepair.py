@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dockrepair_data import RepairCost
+from dockrepair_diagnosis import run_dependency_incident
 from dockrepair_docker import collect_environment, compose_arguments, compose_command
 from dockrepair_planner import fact, search
 
@@ -340,13 +341,33 @@ def main():
     parser.add_argument("--action-timeout", type=float, default=180.0)
     parser.add_argument("--health-timeout", type=float, default=30.0)
     parser.add_argument("--max-actions", type=int, default=20)
+    parser.add_argument(
+        "--probe-image", default="busybox:1.36.1",
+        help="Locally available image used for isolated dependency probes; it is never pulled automatically.",
+    )
+    parser.add_argument("--probe-timeout", type=float, default=None)
+    parser.add_argument("--report-json")
     args = parser.parse_args()
     limits = Limits(args.action_timeout, args.health_timeout, args.max_actions)
+
+    environment = collect_environment(args.compose_file)
+    if environment.contracts:
+        if not args.execute:
+            plan, goal = search(environment)
+            print_plan(environment, plan, goal)
+        return run_dependency_incident(
+            args.compose_file,
+            limits,
+            execute_action,
+            execute=args.execute,
+            probe_image=args.probe_image,
+            probe_timeout=args.probe_timeout,
+            report_path=args.report_json,
+        )[0]
 
     # Execution mode loops until healthy; default mode only prints a plan.
     if args.execute:
         return execute_until_resolved(args.compose_file, limits)
-    environment = collect_environment(args.compose_file)
     plan, goal = search(environment)
     print_plan(environment, plan, goal)
     return 2 if plan.status in {"blocked", "unreachable"} else 0
