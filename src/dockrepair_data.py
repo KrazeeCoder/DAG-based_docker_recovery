@@ -86,6 +86,60 @@ class Diagnosis:
 
 
 @dataclass(frozen=True)
+class EdgeAssessment:
+    contract_key: str
+    caller: str
+    target: str
+    locus: str
+    status: str
+    diagnosis_code: str
+    certainty: str
+    repairable: bool
+    evidence: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class CascadeGroup:
+    identifier: str
+    services: tuple[str, ...]
+    contract_keys: tuple[str, ...]
+    deepest_contracts: tuple[str, ...]
+    deepest_components: tuple[tuple[str, ...], ...]
+    root_candidates: tuple[str, ...]
+    upstream_symptoms: tuple[str, ...]
+    cyclic: bool
+    status: str
+    explanation: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class GraphAnalysis:
+    edges: tuple[EdgeAssessment, ...] = ()
+    groups: tuple[CascadeGroup, ...] = ()
+    selected_candidates: tuple[str, ...] = ()
+    observed: tuple[str, ...] = ()
+    inferred: tuple[str, ...] = ()
+    unresolved: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class InterventionRecord:
+    action: str
+    action_key: tuple[str, ...]
+    service: str
+    cascade_id: str
+    seed_contracts: tuple[str, ...]
+    expected_contracts: tuple[str, ...]
+    before: tuple[EdgeAssessment, ...]
+    after: tuple[EdgeAssessment, ...]
+    directly_restored: tuple[str, ...] = ()
+    indirectly_restored: tuple[str, ...] = ()
+    still_failed: tuple[str, ...] = ()
+    causal_status: str = "unresolved"
+    conclusion: str = ""
+
+
+@dataclass(frozen=True)
 class IncidentReport:
     status: str
     project: str
@@ -97,6 +151,12 @@ class IncidentReport:
     evidence: tuple[str, ...] = ()
     observed_facts: tuple[str, ...] = ()
     mutated_services: tuple[str, ...] = ()
+    graph: GraphAnalysis | None = None
+    interventions: tuple[InterventionRecord, ...] = ()
+    observed_explanations: tuple[str, ...] = ()
+    inferred_explanations: tuple[str, ...] = ()
+    confirmed_explanations: tuple[str, ...] = ()
+    unresolved_explanations: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

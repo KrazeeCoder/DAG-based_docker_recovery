@@ -14,12 +14,15 @@ deterministic system for active diagnosis and bounded repair of declared TCP
 dependencies in single-host Docker Compose applications. DockRepair converts
 Compose and live Docker state into symbolic facts, maintains a finite set of
 infrastructure-level failure hypotheses, selects read-only probes that minimize
-the worst-case remaining hypotheses, and invokes a deny-by-default repair planner
-only after evidence isolates a repairable condition. Repairs are limited to
+the worst-case remaining hypotheses, and analyzes failed contracts as a directed
+application dependency graph. It prioritizes the deepest observed failed region,
+suppresses repairs to possible upstream victims, and invokes a deny-by-default
+repair planner only after evidence isolates a repairable condition. Repairs are limited to
 starting or reconciling a service, restoring a declared network attachment,
 restarting a proven closed listener once, and an explicitly opted-in recreation.
-The system verifies the original caller-to-target contract after every repair and
-otherwise returns a structured abstention report. We evaluate DockRepair against
+The system reprobes the affected graph after every repair and uses recovery of
+unmodified upstream services as intervention evidence supporting or rejecting its
+cascade explanation. Otherwise it returns a structured abstention report. We evaluate DockRepair against
 Compose reconciliation, reactive dependent restart, and a state-only planner on
 held-out and combined failures. This paper asks whether active symbolic probing
 improves diagnosis and minimal verified recovery without claiming application-level
@@ -51,9 +54,11 @@ a universal semantic root cause.
 
 **Contributions.** (1) Explicit, parameterized TCP dependency contracts layered on
 Compose. (2) Active probe selection over a finite symbolic hypothesis set. (3)
-Verified, project-scoped minimal repairs with bounded fallback and opt-in
-recreation. (4) A four-arm opaque-fault benchmark that measures diagnosis,
-restoration, collateral mutation, and correct abstention.
+Graph-wide cascade grouping and deepest-first repair selection that handles shared
+dependencies and cycles without treating graph depth as causal proof. (4)
+Intervention-based explanations distinguishing observed, inferred, confirmed, and
+unresolved claims. (5) A four-arm opaque-fault benchmark protocol that measures
+diagnosis, restoration, collateral mutation, and correct abstention.
 
 ## II. Scope and Related Mechanisms
 
@@ -140,6 +145,45 @@ Terminal results are `RESTORED`, `LOCALIZED_NOT_REPAIRABLE`,
 contains diagnosis history, certainty, probes and their raw outcomes, mutations,
 rejected actions, final facts, and verified contracts.
 
+### D. Graph-wide cascade reasoning
+
+DockRepair builds a directed graph whose edges are declared contracts from caller
+to required target. Each edge diagnosis becomes an assessment containing its
+endpoints, observed status, diagnosis, certainty, evidence, and whether a safe
+repair is available. Weakly connected failed edges form separate cascade groups,
+so unrelated incidents are not combined. Strongly connected components are then
+collapsed. Sink components in the resulting failed-edge DAG are the deepest
+observed failure regions.
+
+For an acyclic group, a failed upstream edge with a path to a deeper failed region
+is marked as a possible symptom. DockRepair generates safe actions for every
+repairable diagnosis but suppresses an upstream action while a deeper failure
+remains. If the deepest region has no safe action, it abstains instead of restarting
+an upstream victim. Eligible actions are ordered first by the existing safety cost,
+then by expected failed-edge coverage, graph depth, and stable action identity.
+Only the selected action executes before the entire graph is observed again.
+
+A failed cycle has no unique deepest member. DockRepair repairs within a cycle only
+when exactly one service has an objectively proven safe action. It abstains when
+multiple services remain plausible, and never labels an action inside a cycle as a
+confirmed causal root.
+
+### E. Intervention-based explanation
+
+Before mutation, DockRepair saves every edge state in the selected cascade group
+and records which upstream edges could recover under the proposed explanation.
+After mutation it reprobes the complete affected group. A directly repaired edge
+is reported separately from an upstream edge that recovered without either of its
+services being modified. The latter supports—but does not prove—the inferred
+cascade. If only the direct edge recovers, the upstream portion of the hypothesis
+is rejected and remains an independent failure for subsequent reasoning.
+
+The machine-readable report separates four epistemic levels: **observed** direct
+probe or container evidence; **inferred** graph explanations not yet tested;
+**confirmed** recovery evidence from a bounded intervention; and **unresolved**
+ambiguity, independent failure, or cycle ambiguity. This terminology prevents a
+deep graph position from being overstated as semantic root cause.
+
 ## IV. Evaluation
 
 ### A. Research questions
@@ -200,6 +244,11 @@ Explicit contracts add configuration burden and are not a complete runtime call
 graph. A TCP success proves reachability, not correct application behavior. A
 target-local probe can establish that no process accepts the declared port but
 cannot determine whether code, configuration, or workload caused that condition.
+Graph-wide reasoning can connect observed infrastructure failures and test a
+proposed cascade through intervention, but it cannot prove arbitrary application
+causation. Upstream recovery supports the explanation only for that observed
+incident; shared timing or an unobserved cause may still exist. Cycles with multiple
+plausible repairs remain unresolved by design.
 Docker Desktop network behavior may differ from native Linux. The diagnostic image
 must already be present. The benchmark's finite injected classes cannot establish
 coverage of arbitrary Docker failures.

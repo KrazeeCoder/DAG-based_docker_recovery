@@ -9,7 +9,8 @@ finishes only when the goal is observed in the live environment.
 
 - `src/dockrepair_data.py` contains the data classes.
 - `src/dockrepair_docker.py` contains every Docker and Compose inspection call.
-- `src/dockrepair_planner.py` contains goals, actions, and graph search.
+- `src/dockrepair_planner.py` contains goals, actions, and repair-state search.
+- `src/dockrepair_graph.py` contains application dependency-graph analysis.
 - `src/dockrepair.py` contains execution and command-line output.
 
 The collector reads normalized Compose configuration plus live containers,
@@ -156,6 +157,39 @@ restore declared network attachments, restart a proven closed listener once,
 create a missing project-owned declared network, and perform one opt-in recreation.
 DNS/path faults and failures beyond a working
 TCP connection are reported without mutation.
+
+### Graph-aware cascade diagnosis
+
+Contracts form a directed graph: `caller -> required target`. DockRepair first
+diagnoses every failed edge, separates unrelated connected failures, and collapses
+dependency cycles. In an acyclic cascade such as `website -> api -> database`, it
+prioritizes the deepest failed dependency. It will not restart `api` merely because
+that action is available while `api -> database` is still failed.
+
+After the selected repair, DockRepair probes every edge in the affected group. If
+an upstream edge recovers without either of its services being modified, the JSON
+report records that the intervention *supports* the cascade explanation. It does
+not describe graph position alone as proof of root cause. Report statements are
+separated into observed, inferred, confirmed, and unresolved findings.
+
+For a failed cycle, DockRepair acts only when exactly one service has a proven safe
+repair. Multiple plausible repair locations cause abstention. Independent failed
+subgraphs remain separate cascade incidents.
+
+The controlled three-service fixture demonstrates this behavior:
+
+```powershell
+docker compose -f .\benchmarks\fixtures\dependency_chain\compose.yaml up -d
+docker exec dockrepair-dependency-chain-database-1 killall httpd
+Start-Sleep -Seconds 2
+$env:PYTHONPATH = "src"
+py -3.11 -m dockrepair -f .\benchmarks\fixtures\dependency_chain\compose.yaml `
+  --execute --report-json .\chain-incident.json
+```
+
+Only `database` should be restarted. Recovery of `api -> database` is direct;
+recovery of `website -> api` without modifying either service is intervention
+evidence supporting the graph explanation.
 
 ## Run it
 

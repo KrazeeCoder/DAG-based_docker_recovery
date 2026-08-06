@@ -6,7 +6,7 @@ import json
 import math
 import subprocess
 import time
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from dockrepair_data import (
@@ -18,6 +18,11 @@ from dockrepair_data import (
     RepairCost,
 )
 from dockrepair_docker import collect_environment
+from dockrepair_graph import (
+    build_graph_analysis,
+    expected_upstream_contracts,
+    finalize_intervention,
+)
 from dockrepair_planner import BASE, build_actions, build_goal, fact, validate_action_safety
 
 
@@ -331,50 +336,160 @@ def _constructed_action(environment, service_name, kind):
     )
 
 
-def select_minimal_repair(environment, diagnoses, attempted):
-    for diagnosis in diagnoses:
-        contract = next(item for item in environment.contracts if item.key == diagnosis.contract_key)
-        if diagnosis.code in {
-            "CALLER_UNAVAILABLE", "TARGET_UNAVAILABLE", "TARGET_CONFIG_DRIFT", "TARGET_OOM_KILLED",
-        }:
-            action = _catalog_action(
-                environment,
-                diagnosis.locus,
-                ("start", "reconcile", "recreate"),
-                attempted,
-            )
-            if action:
-                return action
-        if diagnosis.code in {"CALLER_NETWORK_DRIFT", "TARGET_NETWORK_DRIFT"}:
-            for network in contract.shared_networks:
-                if f"network_exists:{network}" in environment.facts:
-                    continue
-                for candidate in build_actions(environment):
-                    if (
-                        candidate.key == ("create_network", network)
-                        and candidate.key not in attempted
-                        and candidate.is_allowed(environment.facts)
-                    ):
-                        return candidate
-            action = _catalog_action(environment, diagnosis.locus, ("connect_network",), attempted)
-            if action:
-                return action
-        if diagnosis.code == "TARGET_NOT_LISTENING":
-            restart_key = ("restart", contract.target)
-            recreate_key = ("recreate", contract.target)
-            if restart_key not in attempted:
-                return _constructed_action(environment, contract.target, "restart")
-            if environment.services[contract.target].allow_recreate and recreate_key not in attempted:
-                return _constructed_action(environment, contract.target, "recreate")
+def _action_for_diagnosis(environment, diagnosis, attempted):
+    contract = next(
+        item for item in environment.contracts if item.key == diagnosis.contract_key
+    )
+    if diagnosis.code in {
+        "CALLER_UNAVAILABLE", "TARGET_UNAVAILABLE", "TARGET_CONFIG_DRIFT", "TARGET_OOM_KILLED",
+    }:
+        return _catalog_action(
+            environment,
+            diagnosis.locus,
+            ("start", "reconcile", "recreate"),
+            attempted,
+        )
+    if diagnosis.code in {"CALLER_NETWORK_DRIFT", "TARGET_NETWORK_DRIFT"}:
+        for network in contract.shared_networks:
+            if f"network_exists:{network}" in environment.facts:
+                continue
+            for candidate in build_actions(environment):
+                if (
+                    candidate.key == ("create_network", network)
+                    and candidate.key not in attempted
+                    and candidate.is_allowed(environment.facts)
+                ):
+                    return candidate
+        return _catalog_action(
+            environment, diagnosis.locus, ("connect_network",), attempted,
+        )
+    if diagnosis.code == "TARGET_NOT_LISTENING":
+        restart_key = ("restart", contract.target)
+        recreate_key = ("recreate", contract.target)
+        if restart_key not in attempted:
+            return _constructed_action(environment, contract.target, "restart")
+        if environment.services[contract.target].allow_recreate and recreate_key not in attempted:
+            return _constructed_action(environment, contract.target, "recreate")
     return None
 
 
-def incident_status(environment, diagnoses, base_resolved, execute):
+@dataclass(frozen=True)
+class GraphRepairCandidate:
+    action: Action
+    cascade_id: str
+    service: str
+    seed_contracts: tuple[str, ...]
+    expected_contracts: tuple[str, ...]
+    graph_depth: int
+    cyclic: bool
+
+
+def _upstream_depth(analysis, group, seeds):
+    edges = {
+        edge.contract_key: edge for edge in analysis.edges
+        if edge.contract_key in group.contract_keys and edge.status == "failed"
+    }
+    distances = {key: 0 for key in seeds}
+    frontier = list(sorted(seeds))
+    while frontier:
+        child_key = frontier.pop(0)
+        child = edges.get(child_key)
+        if child is None:
+            continue
+        for key, edge in sorted(edges.items()):
+            if key not in distances and edge.target == child.caller:
+                distances[key] = distances[child_key] + 1
+                frontier.append(key)
+    return max(distances.values(), default=0)
+
+
+def graph_repair_candidates(environment, diagnoses, attempted, analysis=None):
+    """Generate safe candidates only from deepest failed graph regions."""
+
+    analysis = analysis or build_graph_analysis(environment, diagnoses)
+    diagnosis_by_key = {item.contract_key: item for item in diagnoses}
+    candidates = []
+    for group in analysis.groups:
+        eligible_keys = group.deepest_contracts
+        if group.cyclic:
+            proven_services = {
+                diagnosis_by_key[key].locus
+                for key in eligible_keys
+                if key in diagnosis_by_key
+                and getattr(diagnosis_by_key[key], "repairable", True)
+                and getattr(diagnosis_by_key[key], "certainty", "proven") == "proven"
+            }
+            if len(proven_services) != 1:
+                continue
+            eligible_keys = tuple(
+                key for key in eligible_keys
+                if diagnosis_by_key.get(key)
+                and diagnosis_by_key[key].locus in proven_services
+                and getattr(diagnosis_by_key[key], "repairable", True)
+                and getattr(diagnosis_by_key[key], "certainty", "proven") == "proven"
+            )
+
+        by_action = {}
+        for key in eligible_keys:
+            diagnosis = diagnosis_by_key.get(key)
+            if not diagnosis or not getattr(diagnosis, "repairable", True):
+                continue
+            action = _action_for_diagnosis(environment, diagnosis, attempted)
+            if action is None:
+                continue
+            stored = by_action.setdefault(
+                action.key,
+                {"action": action, "service": diagnosis.locus, "seeds": set()},
+            )
+            stored["seeds"].add(key)
+
+        for stored in by_action.values():
+            seeds = tuple(sorted(stored["seeds"]))
+            expected = expected_upstream_contracts(analysis, group, seeds)
+            candidates.append(GraphRepairCandidate(
+                stored["action"],
+                group.identifier,
+                stored["service"],
+                seeds,
+                expected,
+                _upstream_depth(analysis, group, seeds),
+                group.cyclic,
+            ))
+    return tuple(candidates)
+
+
+def select_graph_repair(environment, diagnoses, attempted, analysis=None):
+    candidates = graph_repair_candidates(
+        environment, diagnoses, attempted, analysis,
+    )
+    if not candidates:
+        return None
+    return min(candidates, key=lambda candidate: (
+        candidate.action.cost,
+        -len(candidate.expected_contracts),
+        -candidate.graph_depth,
+        candidate.action.key,
+    ))
+
+
+def select_minimal_repair(environment, diagnoses, attempted):
+    """Backward-compatible wrapper around graph-aware repair selection."""
+
+    candidate = select_graph_repair(environment, diagnoses, attempted)
+    return candidate.action if candidate else None
+
+
+def incident_status(
+    environment, diagnoses, base_resolved, execute, repair_available=None,
+):
     if environment.blocked_reasons:
         return "BLOCKED_BY_SAFETY_POLICY"
     if diagnoses and all(item.code == "CONTRACT_HEALTHY" for item in diagnoses) and base_resolved:
         return "RESTORED"
-    if not execute and any(item.repairable for item in diagnoses):
+    if not execute and (
+        any(item.repairable for item in diagnoses)
+        if repair_available is None else repair_available
+    ):
         return "REPAIR_AVAILABLE"
     if any(item.certainty == "ambiguous" for item in diagnoses):
         return "ABSTAINED_AMBIGUOUS"
@@ -409,6 +524,31 @@ def print_incident_report(report):
     print("Mutations: " + (", ".join(report.mutations) or "none"))
     print("Services mutated: " + (", ".join(report.mutated_services) or "none"))
     print("Rejected actions: " + (", ".join(report.rejected_actions) or "none"))
+    if report.graph and report.graph.groups:
+        print("Cascade groups:")
+        for group in report.graph.groups:
+            print(
+                f"- {group.identifier}: deepest={','.join(group.deepest_contracts)} "
+                f"status={group.status} cyclic={group.cyclic}"
+            )
+    for heading, statements in (
+        ("Observed", report.observed_explanations),
+        ("Inferred", report.inferred_explanations),
+        ("Confirmed", report.confirmed_explanations),
+        ("Unresolved", report.unresolved_explanations),
+    ):
+        if statements:
+            print(f"{heading}:")
+            for statement in statements:
+                print(f"- {statement}")
+    if report.interventions:
+        print("Interventions:")
+        for intervention in report.interventions:
+            print(
+                f"- {intervention.action}: {intervention.causal_status}; "
+                f"direct={','.join(intervention.directly_restored) or 'none'}; "
+                f"indirect={','.join(intervention.indirectly_restored) or 'none'}"
+            )
 
 
 def run_dependency_incident(
@@ -431,8 +571,21 @@ def run_dependency_incident(
     diagnosis_history = []
     seen_diagnoses = set()
     evidence = []
+    interventions = []
+    observed_explanations = []
+    inferred_explanations = []
+    confirmed_explanations = []
+    unresolved_explanations = []
+    selected_candidates = []
+    pending_intervention = None
     environment = collect_environment(compose_file)
     final_diagnoses = ()
+    final_analysis = build_graph_analysis(environment, final_diagnoses)
+
+    def remember(collection, values):
+        for value in values:
+            if value not in collection:
+                collection.append(value)
 
     for step in range(limits.max_actions + 1):
         final_diagnoses, probes, probe_facts = diagnose_environment(
@@ -445,10 +598,38 @@ def run_dependency_incident(
                 seen_diagnoses.add(key)
                 diagnosis_history.append(diagnosis)
         all_probes.extend(probes)
+        final_analysis = build_graph_analysis(environment, final_diagnoses)
+        remember(observed_explanations, final_analysis.observed)
+        remember(inferred_explanations, final_analysis.inferred)
+        remember(unresolved_explanations, final_analysis.unresolved)
+
+        if pending_intervention is not None:
+            intervention = finalize_intervention(
+                action=pending_intervention["candidate"].action,
+                service=pending_intervention["candidate"].service,
+                group=pending_intervention["group"],
+                seed_contracts=pending_intervention["candidate"].seed_contracts,
+                expected_contracts=pending_intervention["candidate"].expected_contracts,
+                before_analysis=pending_intervention["analysis"],
+                after_analysis=final_analysis,
+                mutated_services=pending_intervention["mutated_services"],
+            )
+            interventions.append(intervention)
+            if intervention.causal_status in {"supported", "partially_supported"}:
+                remember(confirmed_explanations, (intervention.conclusion,))
+            else:
+                remember(unresolved_explanations, (intervention.conclusion,))
+            pending_intervention = None
+        candidate = select_graph_repair(
+            environment, final_diagnoses, attempted, final_analysis,
+        )
         # Dependency mode verifies declared contracts. Unrelated stack drift is
         # still reported by the ordinary planner but is not mutated here.
         base_resolved = True
-        status = incident_status(environment, final_diagnoses, base_resolved, execute)
+        status = incident_status(
+            environment, final_diagnoses, base_resolved, execute,
+            repair_available=candidate is not None,
+        )
         if status in {"RESTORED", "BLOCKED_BY_SAFETY_POLICY"}:
             break
 
@@ -456,9 +637,16 @@ def run_dependency_incident(
             evidence.append(f"mutation limit {limits.max_actions} reached")
             break
 
-        action = select_minimal_repair(environment, final_diagnoses, attempted)
-        if not execute or action is None:
+        if not execute or candidate is None:
             break
+        action = candidate.action
+        selected_candidates.append(
+            f"{candidate.cascade_id}:{'/'.join(action.key)}"
+        )
+        selected_group = next(
+            group for group in final_analysis.groups
+            if group.identifier == candidate.cascade_id
+        )
 
         # Preserve objective state before mutation; health output is evidence, never parsed as cause.
         for diagnosis in final_diagnoses:
@@ -474,12 +662,19 @@ def run_dependency_incident(
                         f"health output for {diagnosis.locus}: {container.health_output[:500]}"
                     )
         attempted.add(action.key)
+        action_mutated_services = {
+            value for value in action.key[1:] if value in environment.services
+        }
+        pending_intervention = {
+            "candidate": candidate,
+            "group": selected_group,
+            "analysis": final_analysis,
+            "mutated_services": frozenset(action_mutated_services),
+        }
         succeeded, output, environment = execute_action_fn(environment, action, limits)
         if not action.manual:
             mutations.append(action.name)
-            mutated_services.update(
-                value for value in action.key[1:] if value in environment.services
-            )
+            mutated_services.update(action_mutated_services)
         if output:
             evidence.append(f"{action.name}: {output}")
         if not succeeded:
@@ -490,12 +685,16 @@ def run_dependency_incident(
         environment = collect_environment(compose_file)
 
     base_resolved = True
-    status = incident_status(environment, final_diagnoses, base_resolved, execute)
+    final_candidate = select_graph_repair(
+        environment, final_diagnoses, attempted, final_analysis,
+    )
+    status = incident_status(
+        environment, final_diagnoses, base_resolved, execute,
+        repair_available=final_candidate is not None,
+    )
     if status != "BLOCKED_BY_SAFETY_POLICY" and execute and any(
         item.repairable for item in final_diagnoses
-    ) and not select_minimal_repair(
-        environment, final_diagnoses, attempted,
-    ):
+    ) and final_candidate is None:
         status = "LOCALIZED_NOT_REPAIRABLE"
     missing_stack_facts = sorted(build_goal(environment) - environment.facts)
     if missing_stack_facts:
@@ -503,17 +702,29 @@ def run_dependency_incident(
             "unrepaired stack facts outside the dependency action selected: "
             + ", ".join(missing_stack_facts)
         )
+    final_analysis = replace(
+        final_analysis, selected_candidates=tuple(selected_candidates),
+    )
     report = IncidentReport(
-        status,
-        environment.project_name,
-        tuple(diagnosis_history),
-        tuple(all_probes),
-        tuple(mutations),
-        tuple(rejected),
-        tuple(item.contract_key for item in final_diagnoses if item.code == "CONTRACT_HEALTHY"),
-        tuple(evidence),
-        tuple(sorted(environment.facts)),
-        tuple(sorted(mutated_services)),
+        status=status,
+        project=environment.project_name,
+        diagnoses=tuple(diagnosis_history),
+        probes=tuple(all_probes),
+        mutations=tuple(mutations),
+        rejected_actions=tuple(rejected),
+        verified_contracts=tuple(
+            item.contract_key for item in final_diagnoses
+            if item.code == "CONTRACT_HEALTHY"
+        ),
+        evidence=tuple(evidence),
+        observed_facts=tuple(sorted(environment.facts)),
+        mutated_services=tuple(sorted(mutated_services)),
+        graph=final_analysis,
+        interventions=tuple(interventions),
+        observed_explanations=tuple(observed_explanations),
+        inferred_explanations=tuple(inferred_explanations),
+        confirmed_explanations=tuple(confirmed_explanations),
+        unresolved_explanations=tuple(unresolved_explanations),
     )
     print_incident_report(report)
     if report_path:
