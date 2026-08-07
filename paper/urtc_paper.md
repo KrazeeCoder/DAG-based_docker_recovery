@@ -197,9 +197,12 @@ deep graph position from being overstated as semantic root cause.
 
 ### B. Arms and scenarios
 
-The benchmark randomizes four arms: (1) `docker compose up --wait`; (2) reactive
-restart of a visibly failed service and its declared dependents; (3) the original
-state-only DockRepair planner; and (4) full active-diagnosis DockRepair.
+The benchmark randomizes four primary arms: (1) `docker compose up --wait`; (2)
+reactive restart of a visibly failed service and its declared dependents; (3) the
+original state-only DockRepair planner; and (4) full active-diagnosis DockRepair.
+An optional fifth companion arm runs the same opaque faults through an `agy` LLM
+agent with tool use, reporting tokens, wall-clock, and mutating commands for
+cost/latency contrast rather than as a substitute primary baseline.
 
 All scenarios expose the same high-level condition: a declared TCP dependency is
 not usable or the caller remains unready. Repairable cases are stopped and missing
@@ -218,25 +221,70 @@ fault class; the system sees only the Compose file and live environment.
 
 Primary metrics are fault-class accuracy, verified repair rate on supported faults,
 correct abstention on unsupported faults, unnecessary restarts/recreations, probe
-count, mutation count, recovery time, and safety violations. Rules are developed on
-one synthetic topology and evaluated on held-out service names/topology and combined
-faults.
+count, mutation count, recovery time, and safety violations. The LLM companion
+additionally reports input/output/total tokens, turns, and mutating shell commands
+parsed from agent transcripts. Rules are developed on one synthetic topology and
+evaluated on held-out service names/topology and combined faults.
 
-### D. Results status
+### D. Results
 
-The implementation and benchmark protocol are complete, but the final
-ten-repetition study must be run before submission. Do not replace this paragraph
-with aggregate claims until `benchmarks/results/dependency_bakeoff_results.json`
-contains the full experiment. A one-repetition implementation smoke test on the
-closed-listener scenario produced the intended qualitative separation: active
-DockRepair localized the closed listener and restored the contract with one target
-restart, while Compose up, reactive restart, and the state-only planner did not
-observe the running-container failure. This smoke test is not statistically
-meaningful and is not a paper result.
+We ran the locked protocol locally on Colima Docker: twelve scenarios, four
+symbolic arms, ten repetitions, seed 3, for 480 timed arms. After fixing Compose
+DNS alias restoration on network reconnect, we refreshed only the
+`dependency-target-network` block (same seed and repetition count) and merged it
+into the full result set. Raw trials are in
+`benchmarks/results/dependency_bakeoff_results.json`; aggregates are in
+`paper/dependency_results_summary.json`. Compose file hashes were unchanged in every
+trial (zero safety violations). Unit tests remained green (55/55).
 
-The previous DockRepair prototype's lifecycle-focused pilot (`paper/results_summary.json`)
-covered eight faults with one repetition each. Those measurements are preliminary
-engineering evidence only and are not used to answer the new research questions.
+High accuracy on this suite is expected: faults are drawn from a finite,
+infrastructure-level hypothesis class that DockRepair enumerates explicitly. The
+scientific claim is therefore comparative, not absolute: which mechanisms restore
+or correctly refuse under opaque injection. Perfect in-scope accuracy without
+baseline contrast would be weak evidence; the contrasts below are the result.
+
+**Diagnosis (RQ1).** On every diagnostic trial the injected class appeared in the
+report (`diagnosis_accuracy = 1.0` over 120 scenario-reps).
+
+**Supported repair (RQ2).** Across the seven repairable scenarios (70 trials),
+verified repair rates were: diagnostic **1.000**, `compose up` **0.857**, shallow
+planner **0.857**, reactive restart **0.143**. Mean wall-clock on supported faults
+was 4.3 s (diagnostic), 6.2 s (`compose up`), 1.5 s (shallow), and 3.9 s (reactive);
+mean mutations were 1.14, 1.00, 1.00, and 0.43 respectively, with mean **1.4** active
+probes on the diagnostic arm. The closed-listener scenario is the clearest separation:
+diagnostic restored **10/10** with one target restart after listener probes; the three
+baselines restored **0/10**. Target-network drift is restored by diagnostic and shallow
+after alias-aware reconnect (**10/10** each) and by `compose up` (**10/10**), but not by
+reactive restart. Held-out Robot Shop cart→Redis stop faults were restored by
+diagnostic, `compose up`, and shallow (**10/10** each) but not by reactive restart.
+
+**Abstention (RQ3).** On the five unsupported scenarios (50 trials), diagnostic safe
+abstention was **50/50** (mutation counts within each scenario budget; never marked
+restored), including DNS-alias failures that remain intentionally unrepaired.
+Baselines have no abstention path and scored **0/50** on the outcome metric while
+still mutating (mean mutations 1.0 / 0.4 / 0.8 for compose / reactive / shallow).
+
+**Overall outcome accuracy** (repair when expected, else safe abstention) was
+diagnostic **1.000**, compose **0.500**, shallow **0.500**, reactive **0.083**.
+
+**LLM companion (agy).** We ran the same twelve scenarios × ten repetitions (seed 3)
+with `agy` and `gemini-3.6-flash-medium` (`--agy-only`; 120 trials;
+`benchmarks/results/dependency_bakeoff_agy_results.json`,
+`paper/dependency_agy_results_summary.json`). Overall outcome accuracy was **0.800**
+versus DockRepair's **1.000**. On supported faults, agy repaired **0.986** (69/70)
+with diagnosis accuracy **0.957**, but used mean **~58k** total tokens and **52.3 s**
+wall-clock with **2.73** mutating commands per trial, versus DockRepair's **7.2 s**,
+**1.08** mutations, and zero LLM tokens. On unsupported faults, agy safe abstention
+was only **0.54** (27/50): it never abstained on application-unknown (**0/10**, mean
+3.1 mutations) and often “restored” DNS-alias failures by broad Compose recreate
+(**9/10** marked restored) where DockRepair abstains by design. Closed-listener was
+restored by both systems (**10/10**), so the LLM does not remove the need for active
+diagnosis relative to non-LLM baselines; it mainly shows that a capable agent can
+match many repairs at much higher cost and with weaker abstention discipline.
+Timeouts and Compose-file edits were zero for agy.
+
+The previous lifecycle pilot (`paper/results_summary.json`) remains engineering
+evidence only and is not used to answer these research questions.
 
 ## V. Threats and Limitations
 
@@ -255,15 +303,22 @@ coverage of arbitrary Docker failures.
 
 The planner encodes parameterized Docker mechanics and finite hypotheses. It does
 not encode a rule for each fixture, but held-out evaluation is still necessary to
-detect benchmark overfitting. Finally, repeated trials on one host measure internal
-repeatability rather than production prevalence.
+detect benchmark overfitting. The LLM companion uses one agent stack and model
+(`agy` / Gemini 3.6 Flash Medium) on one host; other agents or prompts may differ.
+Finally, repeated trials on one host measure internal repeatability rather than
+production prevalence.
 
 ## VI. Conclusion
 
 DockRepair is positioned as a narrow, verifiable recovery layer for declared
-Docker Compose dependencies. Its useful distinction is not automatic restart, but
-active differentiation before mutation, minimal project-scoped repair, end-to-end
-verification, and explicit abstention at the application-semantic boundary.
+Docker Compose dependencies. Against Compose reconciliation, reactive restart, and
+a state-only planner, active diagnosis uniquely restores closed-listener failures
+and abstains on unsupported classes. Against a capable LLM agent with tool use, it
+matches nearly all supported repairs while using far less time and no model tokens,
+and it abstains more consistently. Its useful distinction is not automatic restart,
+but active differentiation before mutation, minimal project-scoped repair,
+end-to-end verification, and explicit abstention at the application-semantic
+boundary.
 
 ## References
 

@@ -1,10 +1,12 @@
-"""Four-arm evaluation for declared Docker Compose dependency failures."""
+"""Four-arm (+ optional agy) evaluation for declared Docker Compose dependency failures."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
+import re
 import sys
 import time
 from dataclasses import asdict
@@ -16,6 +18,12 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(SRC))
 sys.path.insert(0, str(HERE))
 
+from agy_agent import (  # noqa: E402
+    DEFAULT_AGY_MODEL,
+    DEFAULT_AGY_TIMEOUT_SEC,
+    agy_available,
+    run_agy_trial,
+)
 from dockrepair import Limits, execute_action, execute_until_resolved  # noqa: E402
 from dockrepair_diagnosis import probe_image_available, run_dependency_incident  # noqa: E402
 from dockrepair_docker import collect_environment  # noqa: E402
@@ -30,8 +38,10 @@ from scenarios import (  # noqa: E402
 )
 
 
-ARMS = ("compose_up", "reactive_restart", "shallow", "diagnostic")
+SYMBOLIC_ARMS = ("compose_up", "reactive_restart", "shallow", "diagnostic")
+ALL_ARMS = SYMBOLIC_ARMS + ("agy",)
 RESULTS_FILE = HERE / "results" / "dependency_bakeoff_results.json"
+AGY_RESULTS_FILE = HERE / "results" / "dependency_bakeoff_agy_results.json"
 DEFAULT_SCENARIOS = tuple(
     name for name, scenario in SCENARIOS.items() if scenario.expected_diagnosis
 )
@@ -66,7 +76,114 @@ def _reactive_restart(scenario):
     return result.returncode, targets, f"restarted {', '.join(targets)}"
 
 
-def _run_arm(scenario, arm):
+def _score_arm(scenario, hashes, started, *, restored, missing, errors, mutations,
+               mutated_services, probes, return_code, detail="", report=None,
+               diagnosis_codes=None, safe_abstention=None, extra=None):
+    unchanged = file_hashes(scenario) == hashes
+    diagnosis_codes = list(diagnosis_codes or [])
+    if report is not None and not diagnosis_codes:
+        diagnosis_codes = [item.code for item in report.diagnoses]
+    diagnosis_correct = (
+        scenario.expected_diagnosis in diagnosis_codes if diagnosis_codes else None
+    )
+    if safe_abstention is None:
+        safe_abstention = bool(
+            report
+            and report.status in {"LOCALIZED_NOT_REPAIRABLE", "ABSTAINED_AMBIGUOUS"}
+            and len(report.mutations) <= scenario.abstention_mutation_budget
+        )
+    outcome_correct = restored if scenario.repair_expected else safe_abstention
+    row = {
+        "seconds": round(time.perf_counter() - started, 3),
+        "return_code": return_code,
+        "restored": restored,
+        "outcome_correct": bool(outcome_correct and unchanged),
+        "diagnosis_correct": diagnosis_correct,
+        "diagnosis_codes": diagnosis_codes,
+        "safe_abstention": bool(safe_abstention),
+        "mutations": mutations,
+        "mutated_services": sorted(mutated_services),
+        "services_mutated": len(mutated_services),
+        "probes": probes,
+        "missing_at_end": missing,
+        "collection_errors": errors,
+        "files_unchanged": unchanged,
+        "detail": detail,
+        "incident": asdict(report) if report else None,
+    }
+    if extra:
+        row.update(extra)
+    return row
+
+
+def _run_agy_arm(scenario, trial_id, model, timeout_sec):
+    hashes = file_hashes(scenario)
+    before = collect_environment(str(scenario.compose_file))
+    declared = set(before.services)
+    started = time.perf_counter()
+    transcript = HERE / "results" / "transcripts" / f"{trial_id}-agy.jsonl"
+    trial = run_agy_trial(
+        scenario,
+        model=model,
+        timeout_sec=timeout_sec,
+        transcript_path=transcript,
+        cwd=ROOT,
+    )
+    after = collect_environment(str(scenario.compose_file))
+    mutated_services = {
+        name for name in declared
+        if (before.containers or {}).get(name) != (after.containers or {}).get(name)
+    }
+    # Also attribute services named in mutating docker/compose commands.
+    for command in trial.get("mutating_commands") or []:
+        for name in declared:
+            if re.search(rf"\b{re.escape(name)}\b", command):
+                mutated_services.add(name)
+    restored, missing, errors = inspect_goal(scenario.compose_file)
+    report = trial.get("report") or {}
+    diagnosis = report.get("diagnosis")
+    diagnosis_codes = [diagnosis] if diagnosis else []
+    claimed = (report.get("status") or "").upper()
+    mutations = int(trial.get("mutations") or 0)
+    # Require an explicit ABSTAINED claim plus mutation budget on unsupported faults.
+    safe_abstention = (
+        not restored
+        and claimed == "ABSTAINED"
+        and mutations <= scenario.abstention_mutation_budget
+    )
+
+    return _score_arm(
+        scenario, hashes, started,
+        restored=restored,
+        missing=missing,
+        errors=errors,
+        mutations=mutations,
+        mutated_services=mutated_services,
+        probes=0,
+        return_code=trial.get("return_code", 1),
+        detail=claimed or trial.get("agy_status") or "",
+        diagnosis_codes=diagnosis_codes,
+        safe_abstention=safe_abstention,
+        extra={
+            "model": trial.get("model"),
+            "timed_out": trial.get("timed_out"),
+            "agy_status": trial.get("agy_status"),
+            "agy_duration_seconds": trial.get("duration_seconds"),
+            "num_turns": trial.get("num_turns"),
+            "usage": trial.get("usage"),
+            "mutating_commands": trial.get("mutating_commands"),
+            "commands": trial.get("commands"),
+            "agent_report": report,
+            "transcript_path": trial.get("transcript_path"),
+        },
+    )
+
+
+def _run_arm(scenario, arm, *, trial_id=None, agy_model=DEFAULT_AGY_MODEL,
+             agy_timeout_sec=DEFAULT_AGY_TIMEOUT_SEC):
+    if arm == "agy":
+        return _run_agy_arm(scenario, trial_id or scenario.name, agy_model, agy_timeout_sec)
+
     hashes = file_hashes(scenario)
     before_environment = collect_environment(str(scenario.compose_file))
     declared_services = set(before_environment.services)
@@ -108,50 +225,40 @@ def _run_arm(scenario, arm):
                     value for value in event.get("key", ())[1:]
                     if value in declared_services
                 )
-    else:
+    elif arm == "diagnostic":
         return_code, report = run_dependency_incident(
             str(scenario.compose_file), Limits(), execute_action, execute=True,
         )
         mutations = len(report.mutations)
         mutated_services.update(report.mutated_services)
         probes = len(report.probes)
+    else:
+        raise RuntimeError(f"Unknown arm: {arm}")
 
     restored, missing, errors = inspect_goal(scenario.compose_file)
-    unchanged = file_hashes(scenario) == hashes
-    diagnosis_codes = [item.code for item in report.diagnoses] if report else []
-    diagnosis_correct = scenario.expected_diagnosis in diagnosis_codes if report else None
-    safe_abstention = bool(
-        report
-        and report.status in {"LOCALIZED_NOT_REPAIRABLE", "ABSTAINED_AMBIGUOUS"}
-        and len(report.mutations) <= scenario.abstention_mutation_budget
+    return _score_arm(
+        scenario, hashes, started,
+        restored=restored,
+        missing=missing,
+        errors=errors,
+        mutations=mutations,
+        mutated_services=mutated_services,
+        probes=probes,
+        return_code=return_code,
+        detail=detail,
+        report=report,
     )
-    outcome_correct = restored if scenario.repair_expected else safe_abstention
-    return {
-        "seconds": round(time.perf_counter() - started, 3),
-        "return_code": return_code,
-        "restored": restored,
-        "outcome_correct": outcome_correct and unchanged,
-        "diagnosis_correct": diagnosis_correct,
-        "diagnosis_codes": diagnosis_codes,
-        "safe_abstention": safe_abstention,
-        "mutations": mutations,
-        "mutated_services": sorted(mutated_services),
-        "services_mutated": len(mutated_services),
-        "probes": probes,
-        "missing_at_end": missing,
-        "collection_errors": errors,
-        "files_unchanged": unchanged,
-        "detail": detail,
-        "incident": asdict(report) if report else None,
-    }
 
 
-def _summary(runs):
+def _summary(runs, arms):
     result = {"n_runs": len(runs), "arms": {}}
-    for arm in ARMS:
-        rows = [row[arm] for row in runs]
+    for arm in arms:
+        rows = [row[arm] for row in runs if arm in row]
+        if not rows:
+            continue
         diagnosis_rows = [row for row in rows if row["diagnosis_correct"] is not None]
-        result["arms"][arm] = {
+        arm_summary = {
+            "n": len(rows),
             "outcome_accuracy": round(sum(row["outcome_correct"] for row in rows) / len(rows), 3),
             "repair_rate": round(sum(row["restored"] for row in rows) / len(rows), 3),
             "diagnosis_accuracy": (
@@ -167,16 +274,68 @@ def _summary(runs):
             "mean_probes": round(sum(row["probes"] for row in rows) / len(rows), 3),
             "safety_violations": sum(not row["files_unchanged"] for row in rows),
         }
+        if any("usage" in row for row in rows):
+            usages = [row.get("usage") or {} for row in rows]
+            arm_summary["mean_input_tokens"] = round(
+                sum(int(u.get("input_tokens") or 0) for u in usages) / len(rows), 1
+            )
+            arm_summary["mean_output_tokens"] = round(
+                sum(int(u.get("output_tokens") or 0) for u in usages) / len(rows), 1
+            )
+            arm_summary["mean_total_tokens"] = round(
+                sum(int(u.get("total_tokens") or 0) for u in usages) / len(rows), 1
+            )
+            arm_summary["mean_cache_read_tokens"] = round(
+                sum(int(u.get("cache_read_tokens") or 0) for u in usages) / len(rows), 1
+            )
+            arm_summary["mean_turns"] = round(
+                sum(int(row.get("num_turns") or 0) for row in rows) / len(rows), 2
+            )
+            arm_summary["timeouts"] = sum(bool(row.get("timed_out")) for row in rows)
+            models = sorted({row.get("model") for row in rows if row.get("model")})
+            arm_summary["models"] = models
+        result["arms"][arm] = arm_summary
     return result
 
 
-def run_bakeoff(names, repetitions, seed, fresh):
+def _resolve_arms(arms, include_agy, agy_only):
+    if agy_only:
+        return ("agy",)
+    if arms:
+        selected = tuple(arms)
+    else:
+        selected = SYMBOLIC_ARMS + (("agy",) if include_agy else ())
+    unknown = [arm for arm in selected if arm not in ALL_ARMS]
+    if unknown:
+        raise RuntimeError(f"Unknown arms: {', '.join(unknown)}")
+    if "agy" in selected and not agy_available():
+        raise RuntimeError("agy arm requested but agy CLI is not on PATH")
+    return selected
+
+
+def run_bakeoff(
+    names,
+    repetitions,
+    seed,
+    fresh,
+    *,
+    arms=None,
+    include_agy=False,
+    agy_only=False,
+    agy_model=DEFAULT_AGY_MODEL,
+    agy_timeout_sec=DEFAULT_AGY_TIMEOUT_SEC,
+    results_file=None,
+):
     ensure_daemon()
     probe_ready, probe_image_id = probe_image_available("busybox:1.36.1", ROOT)
     if not probe_ready:
         raise RuntimeError(
             "busybox:1.36.1 is required but is not local; pull it explicitly before the benchmark"
         )
+    selected_arms = _resolve_arms(arms, include_agy, agy_only)
+    results_path = Path(results_file) if results_file else (
+        AGY_RESULTS_FILE if selected_arms == ("agy",) else RESULTS_FILE
+    )
     selected = names or list(DEFAULT_SCENARIOS)
     unknown = [name for name in selected if name not in DEFAULT_SCENARIOS]
     if unknown:
@@ -185,24 +344,34 @@ def run_bakeoff(names, repetitions, seed, fresh):
         "meta": {
             "seed": seed,
             "repetitions": repetitions,
+            "arms": list(selected_arms),
             "probe_image": "busybox:1.36.1",
             "probe_image_id": probe_image_id,
+            "agy_model": agy_model if "agy" in selected_arms else None,
+            "agy_timeout_sec": agy_timeout_sec if "agy" in selected_arms else None,
         },
         "runs": [],
     }
-    if not fresh and RESULTS_FILE.is_file():
-        data = json.loads(RESULTS_FILE.read_text(encoding="utf-8"))
+    if not fresh and results_path.is_file():
+        data = json.loads(results_path.read_text(encoding="utf-8"))
         data["meta"] = {
+            **data.get("meta", {}),
             "seed": seed,
             "repetitions": repetitions,
+            "arms": list(selected_arms),
             "probe_image": "busybox:1.36.1",
             "probe_image_id": probe_image_id,
+            "agy_model": agy_model if "agy" in selected_arms else data.get("meta", {}).get("agy_model"),
+            "agy_timeout_sec": (
+                agy_timeout_sec if "agy" in selected_arms
+                else data.get("meta", {}).get("agy_timeout_sec")
+            ),
         }
     rng = random.Random(seed)
     for name in selected:
         scenario = SCENARIOS[name]
         for repetition in range(1, repetitions + 1):
-            order = list(ARMS)
+            order = list(selected_arms)
             rng.shuffle(order)
             row = {
                 "scenario": name,
@@ -215,18 +384,34 @@ def run_bakeoff(names, repetitions, seed, fresh):
             for arm in order:
                 scenario.setup(scenario)
                 assert_broken(scenario)
-                row[arm] = _run_arm(scenario, arm)
+                trial_id = f"{name}-r{repetition}-s{seed}"
+                row[arm] = _run_arm(
+                    scenario, arm,
+                    trial_id=trial_id,
+                    agy_model=agy_model,
+                    agy_timeout_sec=agy_timeout_sec,
+                )
                 print(
                     f"{name} r{repetition} {arm}: "
                     f"outcome={'OK' if row[arm]['outcome_correct'] else 'FAIL'}"
+                    + (
+                        f" tokens={row[arm].get('usage', {}).get('total_tokens')}"
+                        if arm == "agy" else ""
+                    )
                 )
             clean_project(scenario.compose_file)
             data["runs"].append(row)
-            RESULTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-            RESULTS_FILE.write_text(json.dumps(data, indent=2, default=list) + "\n", encoding="utf-8")
-    data["summary"] = _summary(data["runs"])
-    RESULTS_FILE.write_text(json.dumps(data, indent=2, default=list) + "\n", encoding="utf-8")
+            results_path.parent.mkdir(parents=True, exist_ok=True)
+            results_path.write_text(json.dumps(data, indent=2, default=list) + "\n", encoding="utf-8")
+    # Summary over whatever arms appear in the runs.
+    observed = []
+    for arm in ALL_ARMS:
+        if any(arm in row for row in data["runs"]):
+            observed.append(arm)
+    data["summary"] = _summary(data["runs"], observed)
+    results_path.write_text(json.dumps(data, indent=2, default=list) + "\n", encoding="utf-8")
     print(json.dumps(data["summary"], indent=2))
+    print(f"wrote {results_path}")
 
 
 def main():
@@ -235,8 +420,34 @@ def main():
     parser.add_argument("--repetitions", type=int, default=10)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--fresh", action="store_true")
+    parser.add_argument(
+        "--arm", action="append", dest="arms",
+        help="Arm to include (repeatable). Default: symbolic four-arm suite.",
+    )
+    parser.add_argument(
+        "--include-agy", action="store_true",
+        help="Add the agy LLM arm to the default symbolic suite.",
+    )
+    parser.add_argument(
+        "--agy-only", action="store_true",
+        help="Run only the agy arm (writes dependency_bakeoff_agy_results.json).",
+    )
+    parser.add_argument("--agy-model", default=DEFAULT_AGY_MODEL)
+    parser.add_argument("--agy-timeout-sec", type=int, default=DEFAULT_AGY_TIMEOUT_SEC)
+    parser.add_argument("--results-file", type=Path)
     args = parser.parse_args()
-    run_bakeoff(args.scenarios, args.repetitions, args.seed, args.fresh)
+    run_bakeoff(
+        args.scenarios,
+        args.repetitions,
+        args.seed,
+        args.fresh,
+        arms=args.arms,
+        include_agy=args.include_agy,
+        agy_only=args.agy_only,
+        agy_model=args.agy_model,
+        agy_timeout_sec=args.agy_timeout_sec,
+        results_file=args.results_file,
+    )
 
 
 if __name__ == "__main__":

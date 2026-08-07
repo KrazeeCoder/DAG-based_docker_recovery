@@ -39,6 +39,15 @@ def _port_fact(kind, service, port):
     return f"{kind}:{service}:{port.key}"
 
 
+def _network_connect_arguments(service_name, container_name, network_actual_name):
+    """Restore Compose service DNS by attaching with the service-name alias."""
+    return (
+        "network", "connect",
+        "--alias", service_name,
+        network_actual_name, container_name,
+    )
+
+
 def _requirements(service):
     return frozenset(
         fact(DEPENDENCY_FACTS[condition], dependency)
@@ -360,7 +369,7 @@ def _service_actions(environment, name, service, state):
                 continue
             actions.append(Action(
                 f"Connect {name} to network {network}",
-                ("network", "connect", resource.actual_name, container.name),
+                _network_connect_arguments(name, container.name, resource.actual_name),
                 MUTATE_COST,
                 BASE | {exists, f"network_exists:{network}"},
                 frozenset({_network_fact("network_connected", name, network)}),
@@ -496,10 +505,16 @@ def validate_action_safety(environment, action):
             return False, ("DENY: network attachment target is not project-declared",)
         if resource.external and f"network_exists:{network_name}" not in environment.facts:
             return False, ("DENY: missing external network cannot be created or attached",)
-        expected = ("network", "connect", resource.actual_name, container.name)
+        expected = _network_connect_arguments(
+            service_name, container.name, resource.actual_name,
+        )
         if action.arguments != expected:
             return False, ("DENY: network attachment targets unexpected objects",)
-        evidence.extend(("declared network", "observed project container only"))
+        evidence.extend((
+            "declared network",
+            "observed project container only",
+            "compose service DNS alias restored",
+        ))
         return True, tuple(evidence)
 
     if action.executor != "compose":

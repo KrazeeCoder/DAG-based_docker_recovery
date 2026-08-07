@@ -1,0 +1,636 @@
+{
+  "protocol": {
+    "harness": "benchmarks/dependency_bakeoff.py",
+    "seed": 3,
+    "repetitions": 10,
+    "n_scenarios": 12,
+    "n_scenario_reps": 120,
+    "n_timed_arms": 480,
+    "arms": [
+      "compose_up",
+      "reactive_restart",
+      "shallow",
+      "diagnostic"
+    ],
+    "probe_image": "busybox:1.36.1",
+    "probe_image_id": "sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662",
+    "host": "local Colima Docker",
+    "target_network_refresh": {
+      "reason": "compose DNS alias on docker network connect",
+      "seed": 3,
+      "repetitions": 10,
+      "replaced_scenario": "dependency-target-network"
+    }
+  },
+  "overall": {
+    "n_runs": 120,
+    "arms": {
+      "compose_up": {
+        "outcome_accuracy": 0.5,
+        "repair_rate": 0.5,
+        "diagnosis_accuracy": null,
+        "safe_abstentions": 0,
+        "mean_seconds": 4.29,
+        "mean_mutations": 1.0,
+        "mean_services_mutated": 0.583,
+        "mean_probes": 0.0,
+        "safety_violations": 0
+      },
+      "reactive_restart": {
+        "outcome_accuracy": 0.083,
+        "repair_rate": 0.083,
+        "diagnosis_accuracy": null,
+        "safe_abstentions": 0,
+        "mean_seconds": 3.593,
+        "mean_mutations": 0.417,
+        "mean_services_mutated": 0.667,
+        "mean_probes": 0.0,
+        "safety_violations": 0
+      },
+      "shallow": {
+        "outcome_accuracy": 0.5,
+        "repair_rate": 0.5,
+        "diagnosis_accuracy": null,
+        "safe_abstentions": 0,
+        "mean_seconds": 10.823,
+        "mean_mutations": 0.917,
+        "mean_services_mutated": 0.75,
+        "mean_probes": 0.0,
+        "safety_violations": 0
+      },
+      "diagnostic": {
+        "outcome_accuracy": 1.0,
+        "repair_rate": 0.583,
+        "diagnosis_accuracy": 1.0,
+        "safe_abstentions": 50,
+        "mean_seconds": 7.226,
+        "mean_mutations": 1.083,
+        "mean_services_mutated": 0.917,
+        "mean_probes": 2.583,
+        "safety_violations": 0
+      }
+    }
+  },
+  "supported": {
+    "n": 70,
+    "repair_rate": {
+      "compose_up": 0.857,
+      "reactive_restart": 0.143,
+      "shallow": 0.857,
+      "diagnostic": 1.0
+    },
+    "mean_mutations": {
+      "compose_up": 1.0,
+      "reactive_restart": 0.429,
+      "shallow": 1.0,
+      "diagnostic": 1.143
+    },
+    "mean_seconds": {
+      "compose_up": 6.158,
+      "reactive_restart": 3.902,
+      "shallow": 1.495,
+      "diagnostic": 4.269
+    },
+    "mean_probes": {
+      "compose_up": 0.0,
+      "reactive_restart": 0.0,
+      "shallow": 0.0,
+      "diagnostic": 1.429
+    },
+    "diagnostic_diagnosis_accuracy": 1.0
+  },
+  "unsupported": {
+    "n": 50,
+    "safe_abstention_rate": {
+      "compose_up": 0.0,
+      "reactive_restart": 0.0,
+      "shallow": 0.0,
+      "diagnostic": 1.0
+    },
+    "restored_rate": {
+      "compose_up": 0.0,
+      "reactive_restart": 0.0,
+      "shallow": 0.0,
+      "diagnostic": 0.0
+    },
+    "mean_mutations": {
+      "compose_up": 1.0,
+      "reactive_restart": 0.4,
+      "shallow": 0.8,
+      "diagnostic": 1.0
+    }
+  },
+  "highlights": {
+    "listener_closed_restored": {
+      "compose_up": 0,
+      "reactive_restart": 0,
+      "shallow": 0,
+      "diagnostic": 10
+    },
+    "target_network_restored": {
+      "compose_up": 10,
+      "reactive_restart": 0,
+      "shallow": 10,
+      "diagnostic": 10
+    },
+    "safety_violations": 0,
+    "robot_redis_diagnostic_restored": 10,
+    "diagnostic_outcome_accuracy": 1.0,
+    "diagnostic_supported_repair": 1.0,
+    "diagnostic_unsupported_abstention": 1.0
+  },
+  "per_scenario": [
+    {
+      "scenario": "dependency-application",
+      "expected_diagnosis": "APPLICATION_OR_UNKNOWN",
+      "repair_expected": false,
+      "n": 10,
+      "arms": {
+        "compose_up": {
+          "outcome_correct": 0,
+          "restored": 0,
+          "safe_abstention": 0,
+          "mean_seconds": 1.565,
+          "mean_mutations": 1.0,
+          "mean_probes": 0.0
+        },
+        "reactive_restart": {
+          "outcome_correct": 0,
+          "restored": 0,
+          "safe_abstention": 0,
+          "mean_seconds": 11.415,
+          "mean_mutations": 1.0,
+          "mean_probes": 0.0
+        },
+        "shallow": {
+          "outcome_correct": 0,
+          "restored": 0,
+          "safe_abstention": 0,
+          "mean_seconds": 114.082,
+          "mean_mutations": 2.0,
+          "mean_probes": 0.0
+        },
+        "diagnostic": {
+          "outcome_correct": 10,
+          "restored": 0,
+          "safe_abstention": 10,
+          "mean_seconds": 1.134,
+          "mean_mutations": 0.0,
+          "mean_probes": 1.0,
+          "diagnosis_correct": 10
+        }
+      }
+    },
+    {
+      "scenario": "dependency-caller-network",
+      "expected_diagnosis": "CALLER_NETWORK_DRIFT",
+      "repair_expected": true,
+      "n": 10,
+      "arms": {
+        "compose_up": {
+          "outcome_correct": 10,
+          "restored": 10,
+          "safe_abstention": 0,
+          "mean_seconds": 11.909,
+          "mean_mutations": 1.0,
+          "mean_probes": 0.0
+        },
+        "reactive_restart": {
+          "outcome_correct": 0,
+          "restored": 0,
+          "safe_abstention": 0,
+          "mean_seconds": 0.789,
+          "mean_mutations": 0.0,
+          "mean_probes": 0.0
+        },
+        "shallow": {
+          "outcome_correct": 10,
+          "restored": 10,
+          "safe_abstention": 0,
+          "mean_seconds": 1.348,
+          "mean_mutations": 1.0,
+          "mean_probes": 0.0
+        },
+        "diagnostic": {
+          "outcome_correct": 10,
+          "restored": 10,
+          "safe_abstention": 0,
+          "mean_seconds": 2.389,
+          "mean_mutations": 1.0,
+          "mean_probes": 1.0,
+          "diagnosis_correct": 10
+        }
+      }
+    },
+    {
+      "scenario": "dependency-combined",
+      "expected_diagnosis": "TARGET_UNAVAILABLE",
+      "repair_expected": true,
+      "n": 10,
+      "arms": {
+        "compose_up": {
+          "outcome_correct": 10,
+          "restored": 10,
+          "safe_abstention": 0,
+          "mean_seconds": 12.061,
+          "mean_mutations": 1.0,
+          "mean_probes": 0.0
+        },
+        "reactive_restart": {
+          "outcome_correct": 0,
+          "restored": 0,
+          "safe_abstention": 0,
+          "mean_seconds": 11.139,
+          "mean_mutations": 1.0,
+          "mean_probes": 0.0
+        },
+        "shallow": {
+          "outcome_correct": 10,
+          "restored": 10,
+          "safe_abstention": 0,
+          "mean_seconds": 1.882,
+          "mean_mutations": 2.0,
+          "mean_probes": 0.0
+        },
+        "diagnostic": {
+          "outcome_correct": 10,
+          "restored": 10,
+          "safe_abstention": 0,
+          "mean_seconds": 3.884,
+          "mean_mutations": 2.0,
+          "mean_probes": 1.0,
+          "diagnosis_correct": 10
+        }
+      }
+    },
+    {
+      "scenario": "dependency-dns-failure",
+      "expected_diagnosis": "DNS_FAILURE",
+      "repair_expected": false,
+      "n": 10,
+      "arms": {
+        "compose_up": {
+          "outcome_correct": 0,
+          "restored": 0,
+          "safe_abstention": 0,
+          "mean_seconds": 1.68,
+          "mean_mutations": 1.0,
+          "mean_probes": 0.0
+        },
+        "reactive_restart": {
+          "outcome_correct": 0,
+          "restored": 0,
+          "safe_abstention": 0,
+          "mean_seconds": 1.056,
+          "mean_mutations": 0.0,
+          "mean_probes": 0.0
+        },
+        "shallow": {
+          "outcome_correct": 0,
+          "restored": 0,
+          "safe_abstention": 0,
+          "mean_seconds": 1.062,
+          "mean_mutations": 0.0,
+          "mean_probes": 0.0
+        },
+        "diagnostic": {
+          "outcome_correct": 10,
+          "restored": 0,
+          "safe_abstention": 10,
+          "mean_seconds": 1.352,
+          "mean_mutations": 0.0,
+          "mean_probes": 2.0,
+          "diagnosis_correct": 10
+        }
+      }
+    },
+    {
+      "scenario": "dependency-listener-closed",
+      "expected_diagnosis": "TARGET_NOT_LISTENING",
+      "repair_expected": true,
+      "n": 10,
+      "arms": {
+        "compose_up": {
+          "outcome_correct": 0,
+          "restored": 0,
+          "safe_abstention": 0,
+          "mean_seconds": 1.847,
+          "mean_mutations": 1.0,
+          "mean_probes": 0.0
+        },
+        "reactive_restart": {
+          "outcome_correct": 0,
+          "restored": 0,
+          "safe_abstention": 0,
+          "mean_seconds": 1.224,
+          "mean_mutations": 0.0,
+          "mean_probes": 0.0
+        },
+        "shallow": {
+          "outcome_correct": 0,
+          "restored": 0,
+          "safe_abstention": 0,
+          "mean_seconds": 1.203,
+          "mean_mutations": 0.0,
+          "mean_probes": 0.0
+        },
+        "diagnostic": {
+          "outcome_correct": 10,
+          "restored": 10,
+          "safe_abstention": 0,
+          "mean_seconds": 13.237,
+          "mean_mutations": 1.0,
+          "mean_probes": 4.0,
+          "diagnosis_correct": 10
+        }
+      }
+    },
+    {
+      "scenario": "dependency-oom",
+      "expected_diagnosis": "TARGET_OOM_KILLED",
+      "repair_expected": false,
+      "n": 10,
+      "arms": {
+        "compose_up": {
+          "outcome_correct": 0,
+          "restored": 0,
+          "safe_abstention": 0,
+          "mean_seconds": 1.482,
+          "mean_mutations": 1.0,
+          "mean_probes": 0.0
+        },
+        "reactive_restart": {
+          "outcome_correct": 0,
+          "restored": 0,
+          "safe_abstention": 0,
+          "mean_seconds": 0.944,
+          "mean_mutations": 1.0,
+          "mean_probes": 0.0
+        },
+        "shallow": {
+          "outcome_correct": 0,
+          "restored": 0,
+          "safe_abstention": 0,
+          "mean_seconds": 1.932,
+          "mean_mutations": 2.0,
+          "mean_probes": 0.0
+        },
+        "diagnostic": {
+          "outcome_correct": 10,
+          "restored": 0,
+          "safe_abstention": 10,
+          "mean_seconds": 2.26,
+          "mean_mutations": 1.0,
+          "mean_probes": 0.0,
+          "diagnosis_correct": 10
+        }
+      }
+    },
+    {
+      "scenario": "dependency-persistent-listener",
+      "expected_diagnosis": "TARGET_NOT_LISTENING",
+      "repair_expected": false,
+      "n": 10,
+      "arms": {
+        "compose_up": {
+          "outcome_correct": 0,
+          "restored": 0,
+          "safe_abstention": 0,
+          "mean_seconds": 1.798,
+          "mean_mutations": 1.0,
+          "mean_probes": 0.0
+        },
+        "reactive_restart": {
+          "outcome_correct": 0,
+          "restored": 0,
+          "safe_abstention": 0,
+          "mean_seconds": 1.181,
+          "mean_mutations": 0.0,
+          "mean_probes": 0.0
+        },
+        "shallow": {
+          "outcome_correct": 0,
+          "restored": 0,
+          "safe_abstention": 0,
+          "mean_seconds": 1.143,
+          "mean_mutations": 0.0,
+          "mean_probes": 0.0
+        },
+        "diagnostic": {
+          "outcome_correct": 10,
+          "restored": 0,
+          "safe_abstention": 10,
+          "mean_seconds": 26.095,
+          "mean_mutations": 2.0,
+          "mean_probes": 9.0,
+          "diagnosis_correct": 10
+        }
+      }
+    },
+    {
+      "scenario": "dependency-robot-redis",
+      "expected_diagnosis": "TARGET_UNAVAILABLE",
+      "repair_expected": true,
+      "n": 10,
+      "arms": {
+        "compose_up": {
+          "outcome_correct": 10,
+          "restored": 10,
+          "safe_abstention": 0,
+          "mean_seconds": 1.713,
+          "mean_mutations": 1.0,
+          "mean_probes": 0.0
+        },
+        "reactive_restart": {
+          "outcome_correct": 0,
+          "restored": 0,
+          "safe_abstention": 0,
+          "mean_seconds": 1.284,
+          "mean_mutations": 1.0,
+          "mean_probes": 0.0
+        },
+        "shallow": {
+          "outcome_correct": 10,
+          "restored": 10,
+          "safe_abstention": 0,
+          "mean_seconds": 1.474,
+          "mean_mutations": 1.0,
+          "mean_probes": 0.0
+        },
+        "diagnostic": {
+          "outcome_correct": 10,
+          "restored": 10,
+          "safe_abstention": 0,
+          "mean_seconds": 2.603,
+          "mean_mutations": 1.0,
+          "mean_probes": 1.0,
+          "diagnosis_correct": 10
+        }
+      }
+    },
+    {
+      "scenario": "dependency-target-missing",
+      "expected_diagnosis": "TARGET_UNAVAILABLE",
+      "repair_expected": true,
+      "n": 10,
+      "arms": {
+        "compose_up": {
+          "outcome_correct": 10,
+          "restored": 10,
+          "safe_abstention": 0,
+          "mean_seconds": 1.682,
+          "mean_mutations": 1.0,
+          "mean_probes": 0.0
+        },
+        "reactive_restart": {
+          "outcome_correct": 0,
+          "restored": 0,
+          "safe_abstention": 0,
+          "mean_seconds": 0.718,
+          "mean_mutations": 0.0,
+          "mean_probes": 0.0
+        },
+        "shallow": {
+          "outcome_correct": 10,
+          "restored": 10,
+          "safe_abstention": 0,
+          "mean_seconds": 1.59,
+          "mean_mutations": 1.0,
+          "mean_probes": 0.0
+        },
+        "diagnostic": {
+          "outcome_correct": 10,
+          "restored": 10,
+          "safe_abstention": 0,
+          "mean_seconds": 2.595,
+          "mean_mutations": 1.0,
+          "mean_probes": 1.0,
+          "diagnosis_correct": 10
+        }
+      }
+    },
+    {
+      "scenario": "dependency-target-network",
+      "expected_diagnosis": "TARGET_NETWORK_DRIFT",
+      "repair_expected": true,
+      "n": 10,
+      "arms": {
+        "compose_up": {
+          "outcome_correct": 10,
+          "restored": 10,
+          "safe_abstention": 0,
+          "mean_seconds": 12.228,
+          "mean_mutations": 1.0,
+          "mean_probes": 0.0
+        },
+        "reactive_restart": {
+          "outcome_correct": 0,
+          "restored": 0,
+          "safe_abstention": 0,
+          "mean_seconds": 0.807,
+          "mean_mutations": 0.0,
+          "mean_probes": 0.0
+        },
+        "shallow": {
+          "outcome_correct": 10,
+          "restored": 10,
+          "safe_abstention": 0,
+          "mean_seconds": 1.523,
+          "mean_mutations": 1.0,
+          "mean_probes": 0.0
+        },
+        "diagnostic": {
+          "outcome_correct": 10,
+          "restored": 10,
+          "safe_abstention": 0,
+          "mean_seconds": 2.593,
+          "mean_mutations": 1.0,
+          "mean_probes": 1.0,
+          "diagnosis_correct": 10
+        }
+      }
+    },
+    {
+      "scenario": "dependency-target-stop",
+      "expected_diagnosis": "TARGET_UNAVAILABLE",
+      "repair_expected": true,
+      "n": 10,
+      "arms": {
+        "compose_up": {
+          "outcome_correct": 10,
+          "restored": 10,
+          "safe_abstention": 0,
+          "mean_seconds": 1.664,
+          "mean_mutations": 1.0,
+          "mean_probes": 0.0
+        },
+        "reactive_restart": {
+          "outcome_correct": 10,
+          "restored": 10,
+          "safe_abstention": 0,
+          "mean_seconds": 11.353,
+          "mean_mutations": 1.0,
+          "mean_probes": 0.0
+        },
+        "shallow": {
+          "outcome_correct": 10,
+          "restored": 10,
+          "safe_abstention": 0,
+          "mean_seconds": 1.446,
+          "mean_mutations": 1.0,
+          "mean_probes": 0.0
+        },
+        "diagnostic": {
+          "outcome_correct": 10,
+          "restored": 10,
+          "safe_abstention": 0,
+          "mean_seconds": 2.584,
+          "mean_mutations": 1.0,
+          "mean_probes": 1.0,
+          "diagnosis_correct": 10
+        }
+      }
+    },
+    {
+      "scenario": "dependency-wrong-port",
+      "expected_diagnosis": "TARGET_NOT_LISTENING",
+      "repair_expected": false,
+      "n": 10,
+      "arms": {
+        "compose_up": {
+          "outcome_correct": 0,
+          "restored": 0,
+          "safe_abstention": 0,
+          "mean_seconds": 1.855,
+          "mean_mutations": 1.0,
+          "mean_probes": 0.0
+        },
+        "reactive_restart": {
+          "outcome_correct": 0,
+          "restored": 0,
+          "safe_abstention": 0,
+          "mean_seconds": 1.2,
+          "mean_mutations": 0.0,
+          "mean_probes": 0.0
+        },
+        "shallow": {
+          "outcome_correct": 0,
+          "restored": 0,
+          "safe_abstention": 0,
+          "mean_seconds": 1.187,
+          "mean_mutations": 0.0,
+          "mean_probes": 0.0
+        },
+        "diagnostic": {
+          "outcome_correct": 10,
+          "restored": 0,
+          "safe_abstention": 10,
+          "mean_seconds": 25.983,
+          "mean_mutations": 2.0,
+          "mean_probes": 9.0,
+          "diagnosis_correct": 10
+        }
+      }
+    }
+  ]
+}

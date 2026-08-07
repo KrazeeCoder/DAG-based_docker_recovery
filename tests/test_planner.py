@@ -407,6 +407,55 @@ class SafetyCostTests(unittest.TestCase):
         self.assertFalse(validate_action_safety(environment, disguised)[0])
         self.assertFalse(validate_action_safety(environment, external)[0])
 
+    def test_network_connect_restores_compose_service_alias(self):
+        service = Service(False, "database", networks=("backend",))
+        state = BASE | frozenset({
+            "container_exists:database",
+            "config_current:database",
+            "running:database",
+            "network_exists:backend",
+        })
+        environment = Environment(
+            "compose.yaml",
+            "test",
+            {"database": service},
+            state,
+            containers={
+                "database": Container(
+                    service="database", container_id="ctr", name="database",
+                    status="running", running=True, exit_code=None, oom_killed=False,
+                    restart_count=0, health=None, health_output="", config_hash="database",
+                    networks=frozenset(), mounts=frozenset(), published_ports=frozenset(),
+                ),
+            },
+            networks={"backend": Resource("backend", "test_backend")},
+        )
+
+        actions = {
+            action.key: action
+            for action in build_actions(environment)
+            if action.key[0] == "connect_network"
+        }
+        action = actions[("connect_network", "database", "backend")]
+        self.assertEqual(
+            action.arguments,
+            ("network", "connect", "--alias", "database", "test_backend", "database"),
+        )
+        allowed, evidence = validate_action_safety(environment, action)
+        self.assertTrue(allowed)
+        self.assertIn("compose service DNS alias restored", evidence)
+
+        bare = Action(
+            "Connect bare",
+            ("network", "connect", "test_backend", "database"),
+            RepairCost(0, 1, 0, 1),
+            BASE,
+            frozenset({"network_connected:database:backend"}),
+            identity=("connect_network", "database", "backend"),
+            executor="docker",
+        )
+        self.assertFalse(validate_action_safety(environment, bare)[0])
+
     def test_generated_actions_include_safety_evidence(self):
         service = Service(False, "web")
         state = BASE | frozenset({"container_exists:web", "config_current:web", "stopped:web"})
