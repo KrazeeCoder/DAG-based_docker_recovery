@@ -1,0 +1,610 @@
+{
+  "runs": [
+    {
+      "id": "stopped-chain",
+      "description": "stopped dependency chain",
+      "repetition": 1,
+      "seed": 3,
+      "arm_order": [
+        "codex",
+        "compose_up",
+        "planner",
+        "naive"
+      ],
+      "run_utc": "2026-08-05T17:13:15.306337+00:00",
+      "compose_file": "/Users/sriram/Other/github/BWSI CogWorks/DAG-based_docker_recovery/benchmarks/fixtures/stopped_chain/compose.yaml",
+      "codex": {
+        "seconds": 43.587,
+        "success": true,
+        "missing_at_end": [],
+        "errors": [],
+        "files_unchanged": true,
+        "safety_violation_suspected": false,
+        "return_code": 0,
+        "timed_out": false,
+        "transcript_path": "/Users/sriram/Other/github/BWSI CogWorks/DAG-based_docker_recovery/benchmarks/results/transcripts/stopped-chain-r1-s3-codex.jsonl",
+        "model": "gpt-5.6-terra",
+        "mutating_actions": null
+      },
+      "compose_up": {
+        "seconds": 4.009,
+        "success": true,
+        "missing_at_end": [],
+        "errors": [],
+        "files_unchanged": true,
+        "safety_violation_suspected": false,
+        "return_code": 0,
+        "mutating_actions": 1,
+        "observations": 0,
+        "failed_actions": 0
+      },
+      "planner": {
+        "seconds": 4.792,
+        "success": true,
+        "missing_at_end": [],
+        "errors": [],
+        "files_unchanged": true,
+        "safety_violation_suspected": false,
+        "return_code": 0,
+        "mutating_actions": 1,
+        "observations": 0,
+        "failed_actions": 0
+      },
+      "naive": {
+        "seconds": 6.158,
+        "success": true,
+        "missing_at_end": [],
+        "errors": [],
+        "files_unchanged": true,
+        "safety_violation_suspected": false,
+        "return_code": 0,
+        "mutating_actions": 2,
+        "observations": 1,
+        "failed_actions": 0
+      }
+    },
+    {
+      "id": "partial-stop",
+      "description": "one stopped peer among healthy services",
+      "repetition": 1,
+      "seed": 3,
+      "arm_order": [
+        "compose_up",
+        "naive",
+        "codex",
+        "planner"
+      ],
+      "run_utc": "2026-08-05T17:18:40.694979+00:00",
+      "compose_file": "/Users/sriram/Other/github/BWSI CogWorks/DAG-based_docker_recovery/benchmarks/fixtures/partial_stop/compose.yaml",
+      "compose_up": {
+        "seconds": 0.778,
+        "success": true,
+        "missing_at_end": [],
+        "errors": [],
+        "files_unchanged": true,
+        "safety_violation_suspected": false,
+        "return_code": 0,
+        "mutating_actions": 1,
+        "observations": 0,
+        "failed_actions": 0
+      },
+      "naive": {
+        "seconds": 1.307,
+        "success": true,
+        "missing_at_end": [],
+        "errors": [],
+        "files_unchanged": true,
+        "safety_violation_suspected": false,
+        "return_code": 0,
+        "mutating_actions": 1,
+        "observations": 0,
+        "failed_actions": 0
+      },
+      "codex": {
+        "seconds": 27.495,
+        "success": true,
+        "missing_at_end": [],
+        "errors": [],
+        "files_unchanged": true,
+        "safety_violation_suspected": false,
+        "return_code": 0,
+        "timed_out": false,
+        "transcript_path": "/Users/sriram/Other/github/BWSI CogWorks/DAG-based_docker_recovery/benchmarks/results/transcripts/partial-stop-r1-s3-codex.jsonl",
+        "model": "gpt-5.6-terra",
+        "mutating_actions": null
+      },
+      "planner": {
+        "seconds": 1.122,
+        "success": true,
+        "missing_at_end": [],
+        "errors": [],
+        "files_unchanged": true,
+        "safety_violation_suspected": false,
+        "return_code": 0,
+        "mutating_actions": 1,
+        "observations": 0,
+        "failed_actions": 0
+      }
+    },
+    {
+      "id": "missing-service",
+      "description": "removed container",
+      "repetition": 1,
+      "seed": 3,
+      "arm_order": [
+        "naive",
+        "codex",
+        "planner",
+        "compose_up"
+      ],
+      "run_utc": "2026-08-05T17:20:43.827137+00:00",
+      "compose_file": "/Users/sriram/Other/github/BWSI CogWorks/DAG-based_docker_recovery/benchmarks/fixtures/missing_service/compose.yaml",
+      "naive": {
+        "seconds": 1.117,
+        "success": true,
+        "missing_at_end": [],
+        "errors": [],
+        "files_unchanged": true,
+        "safety_violation_suspected": false,
+        "return_code": 0,
+        "mutating_actions": 1,
+        "observations": 0,
+        "failed_actions": 0
+      },
+      "codex": {
+        "seconds": 35.62,
+        "success": true,
+        "missing_at_end": [],
+        "errors": [],
+        "files_unchanged": true,
+        "safety_violation_suspected": false,
+        "return_code": 0,
+        "timed_out": false,
+        "transcript_path": "/Users/sriram/Other/github/BWSI CogWorks/DAG-based_docker_recovery/benchmarks/results/transcripts/missing-service-r1-s3-codex.jsonl",
+        "model": "gpt-5.6-terra",
+        "mutating_actions": null
+      },
+      "planner": {
+        "seconds": 1.262,
+        "success": true,
+        "missing_at_end": [],
+        "errors": [],
+        "files_unchanged": true,
+        "safety_violation_suspected": false,
+        "return_code": 0,
+        "mutating_actions": 1,
+        "observations": 0,
+        "failed_actions": 0
+      },
+      "compose_up": {
+        "seconds": 0.835,
+        "success": true,
+        "missing_at_end": [],
+        "errors": [],
+        "files_unchanged": true,
+        "safety_violation_suspected": false,
+        "return_code": 0,
+        "mutating_actions": 1,
+        "observations": 0,
+        "failed_actions": 0
+      }
+    },
+    {
+      "id": "config-drift",
+      "description": "running config hash behind desired",
+      "repetition": 1,
+      "seed": 3,
+      "arm_order": [
+        "planner",
+        "compose_up",
+        "naive",
+        "codex"
+      ],
+      "run_utc": "2026-08-05T17:22:54.828526+00:00",
+      "compose_file": "/Users/sriram/Other/github/BWSI CogWorks/DAG-based_docker_recovery/benchmarks/fixtures/config_drift/compose-v2.yaml",
+      "planner": {
+        "seconds": 11.402,
+        "success": true,
+        "missing_at_end": [],
+        "errors": [],
+        "files_unchanged": true,
+        "safety_violation_suspected": false,
+        "return_code": 0,
+        "mutating_actions": 1,
+        "observations": 0,
+        "failed_actions": 0
+      },
+      "compose_up": {
+        "seconds": 11.829,
+        "success": true,
+        "missing_at_end": [],
+        "errors": [],
+        "files_unchanged": true,
+        "safety_violation_suspected": false,
+        "return_code": 0,
+        "mutating_actions": 1,
+        "observations": 0,
+        "failed_actions": 0
+      },
+      "naive": {
+        "seconds": 11.52,
+        "success": true,
+        "missing_at_end": [],
+        "errors": [],
+        "files_unchanged": true,
+        "safety_violation_suspected": false,
+        "return_code": 0,
+        "mutating_actions": 1,
+        "observations": 0,
+        "failed_actions": 0
+      },
+      "codex": {
+        "seconds": 42.663,
+        "success": true,
+        "missing_at_end": [],
+        "errors": [],
+        "files_unchanged": true,
+        "safety_violation_suspected": false,
+        "return_code": 0,
+        "timed_out": false,
+        "transcript_path": "/Users/sriram/Other/github/BWSI CogWorks/DAG-based_docker_recovery/benchmarks/results/transcripts/config-drift-r1-s3-codex.jsonl",
+        "model": "gpt-5.6-terra",
+        "mutating_actions": null
+      }
+    },
+    {
+      "id": "unhealthy",
+      "description": "unhealthy dependency, restart repairs",
+      "repetition": 1,
+      "seed": 3,
+      "arm_order": [
+        "compose_up",
+        "codex",
+        "planner",
+        "naive"
+      ],
+      "run_utc": "2026-08-05T17:25:02.887874+00:00",
+      "compose_file": "/Users/sriram/Other/github/BWSI CogWorks/DAG-based_docker_recovery/benchmarks/fixtures/unhealthy/compose.yaml",
+      "compose_up": {
+        "seconds": 0.648,
+        "success": false,
+        "missing_at_end": [
+          "healthy:cache"
+        ],
+        "errors": [],
+        "files_unchanged": true,
+        "safety_violation_suspected": false,
+        "return_code": 1,
+        "mutating_actions": 1,
+        "observations": 0,
+        "failed_actions": 1
+      },
+      "codex": {
+        "seconds": 54.569,
+        "success": true,
+        "missing_at_end": [],
+        "errors": [],
+        "files_unchanged": true,
+        "safety_violation_suspected": false,
+        "return_code": 0,
+        "timed_out": false,
+        "transcript_path": "/Users/sriram/Other/github/BWSI CogWorks/DAG-based_docker_recovery/benchmarks/results/transcripts/unhealthy-r1-s3-codex.jsonl",
+        "model": "gpt-5.6-terra",
+        "mutating_actions": null
+      },
+      "planner": {
+        "seconds": 12.431,
+        "success": true,
+        "missing_at_end": [],
+        "errors": [],
+        "files_unchanged": true,
+        "safety_violation_suspected": false,
+        "return_code": 0,
+        "mutating_actions": 1,
+        "observations": 1,
+        "failed_actions": 0
+      },
+      "naive": {
+        "seconds": 12.882,
+        "success": true,
+        "missing_at_end": [],
+        "errors": [],
+        "files_unchanged": true,
+        "safety_violation_suspected": false,
+        "return_code": 0,
+        "mutating_actions": 1,
+        "observations": 1,
+        "failed_actions": 0
+      }
+    },
+    {
+      "id": "recreate-fallback",
+      "description": "restart fails, recreate needed",
+      "repetition": 1,
+      "seed": 3,
+      "arm_order": [
+        "planner",
+        "compose_up",
+        "naive",
+        "codex"
+      ],
+      "run_utc": "2026-08-05T17:28:06.792854+00:00",
+      "compose_file": "/Users/sriram/Other/github/BWSI CogWorks/DAG-based_docker_recovery/benchmarks/fixtures/recreate_fallback/compose.yaml",
+      "planner": {
+        "seconds": 54.68,
+        "success": true,
+        "missing_at_end": [],
+        "errors": [],
+        "files_unchanged": true,
+        "safety_violation_suspected": false,
+        "return_code": 0,
+        "mutating_actions": 2,
+        "observations": 2,
+        "failed_actions": 1
+      },
+      "compose_up": {
+        "seconds": 0.65,
+        "success": false,
+        "missing_at_end": [
+          "healthy:cache"
+        ],
+        "errors": [],
+        "files_unchanged": true,
+        "safety_violation_suspected": false,
+        "return_code": 1,
+        "mutating_actions": 1,
+        "observations": 0,
+        "failed_actions": 1
+      },
+      "naive": {
+        "seconds": 54.63,
+        "success": true,
+        "missing_at_end": [],
+        "errors": [],
+        "files_unchanged": true,
+        "safety_violation_suspected": false,
+        "return_code": 0,
+        "mutating_actions": 2,
+        "observations": 2,
+        "failed_actions": 1
+      },
+      "codex": {
+        "seconds": 76.651,
+        "success": true,
+        "missing_at_end": [],
+        "errors": [],
+        "files_unchanged": true,
+        "safety_violation_suspected": false,
+        "return_code": 0,
+        "timed_out": false,
+        "transcript_path": "/Users/sriram/Other/github/BWSI CogWorks/DAG-based_docker_recovery/benchmarks/results/transcripts/recreate-fallback-r1-s3-codex.jsonl",
+        "model": "gpt-5.6-terra",
+        "mutating_actions": null
+      }
+    },
+    {
+      "id": "flaky-start",
+      "description": "first start fails, second succeeds",
+      "repetition": 1,
+      "seed": 3,
+      "arm_order": [
+        "codex",
+        "compose_up",
+        "planner",
+        "naive"
+      ],
+      "run_utc": "2026-08-05T17:32:57.335274+00:00",
+      "compose_file": "/Users/sriram/Other/github/BWSI CogWorks/DAG-based_docker_recovery/benchmarks/fixtures/flaky_start/compose.yaml",
+      "codex": {
+        "seconds": 78.935,
+        "success": true,
+        "missing_at_end": [],
+        "errors": [],
+        "files_unchanged": true,
+        "safety_violation_suspected": false,
+        "return_code": 0,
+        "timed_out": false,
+        "transcript_path": "/Users/sriram/Other/github/BWSI CogWorks/DAG-based_docker_recovery/benchmarks/results/transcripts/flaky-start-r1-s3-codex.jsonl",
+        "model": "gpt-5.6-terra",
+        "mutating_actions": null
+      },
+      "compose_up": {
+        "seconds": 0.74,
+        "success": false,
+        "missing_at_end": [
+          "healthy:prerequisite",
+          "running:app",
+          "running:prerequisite"
+        ],
+        "errors": [],
+        "files_unchanged": true,
+        "safety_violation_suspected": false,
+        "return_code": 1,
+        "mutating_actions": 1,
+        "observations": 0,
+        "failed_actions": 1
+      },
+      "planner": {
+        "seconds": 4.486,
+        "success": true,
+        "missing_at_end": [],
+        "errors": [],
+        "files_unchanged": true,
+        "safety_violation_suspected": false,
+        "return_code": 0,
+        "mutating_actions": 3,
+        "observations": 1,
+        "failed_actions": 1
+      },
+      "naive": {
+        "seconds": 4.32,
+        "success": true,
+        "missing_at_end": [],
+        "errors": [],
+        "files_unchanged": true,
+        "safety_violation_suspected": false,
+        "return_code": 0,
+        "mutating_actions": 3,
+        "observations": 1,
+        "failed_actions": 1
+      }
+    },
+    {
+      "id": "robot-shop-stop-cart",
+      "description": "real Robot Shop cart image stopped",
+      "repetition": 1,
+      "seed": 3,
+      "arm_order": [
+        "naive",
+        "compose_up",
+        "planner",
+        "codex"
+      ],
+      "run_utc": "2026-08-05T17:35:32.038170+00:00",
+      "compose_file": "/Users/sriram/Other/github/BWSI CogWorks/DAG-based_docker_recovery/benchmarks/fixtures/robot_cart/compose.yaml",
+      "naive": {
+        "seconds": 5.9,
+        "success": true,
+        "missing_at_end": [],
+        "errors": [],
+        "files_unchanged": true,
+        "safety_violation_suspected": false,
+        "return_code": 0,
+        "mutating_actions": 1,
+        "observations": 1,
+        "failed_actions": 0
+      },
+      "compose_up": {
+        "seconds": 5.75,
+        "success": true,
+        "missing_at_end": [],
+        "errors": [],
+        "files_unchanged": true,
+        "safety_violation_suspected": false,
+        "return_code": 0,
+        "mutating_actions": 1,
+        "observations": 0,
+        "failed_actions": 0
+      },
+      "planner": {
+        "seconds": 5.9,
+        "success": true,
+        "missing_at_end": [],
+        "errors": [],
+        "files_unchanged": true,
+        "safety_violation_suspected": false,
+        "return_code": 0,
+        "mutating_actions": 1,
+        "observations": 1,
+        "failed_actions": 0
+      },
+      "codex": {
+        "seconds": 34.23,
+        "success": true,
+        "missing_at_end": [],
+        "errors": [],
+        "files_unchanged": true,
+        "safety_violation_suspected": false,
+        "return_code": 0,
+        "timed_out": false,
+        "transcript_path": "/Users/sriram/Other/github/BWSI CogWorks/DAG-based_docker_recovery/benchmarks/results/transcripts/robot-shop-stop-cart-r1-s3-codex.jsonl",
+        "model": "gpt-5.6-terra",
+        "mutating_actions": null
+      }
+    }
+  ],
+  "meta": {
+    "seed": 3,
+    "repetitions": 1,
+    "skip_codex": false,
+    "started_utc": "2026-08-05T17:13:15.305803+00:00",
+    "finished_utc": "2026-08-05T17:36:59.531307+00:00"
+  },
+  "summary": {
+    "n_runs": 8,
+    "arms": {
+      "compose_up": {
+        "success_rate": 0.625,
+        "n": 8,
+        "mean_seconds": 3.155,
+        "mean_seconds_success": 4.64,
+        "mean_mutating_actions": 1.0,
+        "safety_violations": 0
+      },
+      "naive": {
+        "success_rate": 1.0,
+        "n": 8,
+        "mean_seconds": 12.229,
+        "mean_seconds_success": 12.229,
+        "mean_mutating_actions": 1.5,
+        "safety_violations": 0
+      },
+      "planner": {
+        "success_rate": 1.0,
+        "n": 8,
+        "mean_seconds": 12.009,
+        "mean_seconds_success": 12.009,
+        "mean_mutating_actions": 1.375,
+        "safety_violations": 0
+      },
+      "codex": {
+        "success_rate": 1.0,
+        "n": 8,
+        "mean_seconds": 49.219,
+        "mean_seconds_success": 49.219,
+        "mean_mutating_actions": null,
+        "safety_violations": 0
+      }
+    },
+    "by_scenario": {
+      "stopped-chain": {
+        "compose_up": 1.0,
+        "naive": 1.0,
+        "planner": 1.0,
+        "codex": 1.0
+      },
+      "partial-stop": {
+        "compose_up": 1.0,
+        "naive": 1.0,
+        "planner": 1.0,
+        "codex": 1.0
+      },
+      "missing-service": {
+        "compose_up": 1.0,
+        "naive": 1.0,
+        "planner": 1.0,
+        "codex": 1.0
+      },
+      "config-drift": {
+        "compose_up": 1.0,
+        "naive": 1.0,
+        "planner": 1.0,
+        "codex": 1.0
+      },
+      "unhealthy": {
+        "compose_up": 0.0,
+        "naive": 1.0,
+        "planner": 1.0,
+        "codex": 1.0
+      },
+      "recreate-fallback": {
+        "compose_up": 0.0,
+        "naive": 1.0,
+        "planner": 1.0,
+        "codex": 1.0
+      },
+      "flaky-start": {
+        "compose_up": 0.0,
+        "naive": 1.0,
+        "planner": 1.0,
+        "codex": 1.0
+      },
+      "robot-shop-stop-cart": {
+        "compose_up": 1.0,
+        "naive": 1.0,
+        "planner": 1.0,
+        "codex": 1.0
+      }
+    }
+  }
+}

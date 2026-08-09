@@ -1,0 +1,298 @@
+{
+  "runs": [
+    {
+      "id": "unhealthy",
+      "description": "A running dependency is unhealthy and restart repairs it; generic Compose up often leaves it unhealthy.",
+      "repetition": 1,
+      "seed": 0,
+      "arm_order": [
+        "naive",
+        "planner"
+      ],
+      "run_utc": "2026-08-05T13:31:39.917600+00:00",
+      "compose_file": "/Users/sriram/Other/github/BWSI CogWorks/DAG-based_docker_recovery/benchmarks/fixtures/unhealthy/compose.yaml",
+      "naive": {
+        "seconds": 12.367,
+        "success": true,
+        "return_code": 0,
+        "missing_at_end": [],
+        "errors": [],
+        "mutating_actions": 2,
+        "failed_actions": 0,
+        "safety_violation_suspected": false
+      },
+      "planner": {
+        "seconds": 12.458,
+        "success": true,
+        "return_code": 0,
+        "missing_at_end": [],
+        "errors": [],
+        "mutating_actions": 2,
+        "failed_actions": 0,
+        "safety_violation_suspected": false
+      }
+    },
+    {
+      "id": "recreate-fallback",
+      "description": "Restart cannot clear container-local corruption, but forced recreation can; proves alternative-path fallback.",
+      "repetition": 1,
+      "seed": 0,
+      "arm_order": [
+        "naive",
+        "planner"
+      ],
+      "run_utc": "2026-08-05T13:33:05.873854+00:00",
+      "compose_file": "/Users/sriram/Other/github/BWSI CogWorks/DAG-based_docker_recovery/benchmarks/fixtures/recreate_fallback/compose.yaml",
+      "naive": {
+        "seconds": 53.82,
+        "success": true,
+        "return_code": 0,
+        "missing_at_end": [],
+        "errors": [],
+        "mutating_actions": 4,
+        "failed_actions": 1,
+        "safety_violation_suspected": false
+      },
+      "planner": {
+        "seconds": 53.223,
+        "success": true,
+        "return_code": 0,
+        "missing_at_end": [],
+        "errors": [],
+        "mutating_actions": 4,
+        "failed_actions": 1,
+        "safety_violation_suspected": false
+      }
+    },
+    {
+      "id": "flaky-start",
+      "description": "The prerequisite exits on its first start and succeeds on its second; tests inspect-and-replan recovery.",
+      "repetition": 1,
+      "seed": 0,
+      "arm_order": [
+        "planner",
+        "naive"
+      ],
+      "run_utc": "2026-08-05T13:35:43.657961+00:00",
+      "compose_file": "/Users/sriram/Other/github/BWSI CogWorks/DAG-based_docker_recovery/benchmarks/fixtures/flaky_start/compose.yaml",
+      "planner": {
+        "seconds": 4.325,
+        "success": true,
+        "return_code": 0,
+        "missing_at_end": [],
+        "errors": [],
+        "mutating_actions": 4,
+        "failed_actions": 1,
+        "safety_violation_suspected": false
+      },
+      "naive": {
+        "seconds": 3.844,
+        "success": true,
+        "return_code": 0,
+        "missing_at_end": [],
+        "errors": [],
+        "mutating_actions": 4,
+        "failed_actions": 1,
+        "safety_violation_suspected": false
+      }
+    },
+    {
+      "id": "stopped-chain",
+      "description": "Three stopped services with two health-gated dependency levels; simple Compose reconciliation should excel.",
+      "repetition": 1,
+      "seed": 0,
+      "arm_order": [
+        "naive",
+        "planner"
+      ],
+      "run_utc": "2026-08-05T13:36:35.212466+00:00",
+      "compose_file": "/Users/sriram/Other/github/BWSI CogWorks/DAG-based_docker_recovery/benchmarks/fixtures/stopped_chain/compose.yaml",
+      "naive": {
+        "seconds": 5.472,
+        "success": true,
+        "return_code": 0,
+        "missing_at_end": [],
+        "errors": [],
+        "mutating_actions": 3,
+        "failed_actions": 0,
+        "safety_violation_suspected": false
+      },
+      "planner": {
+        "seconds": 4.931,
+        "success": true,
+        "return_code": 0,
+        "missing_at_end": [],
+        "errors": [],
+        "mutating_actions": 1,
+        "failed_actions": 0,
+        "safety_violation_suspected": false
+      }
+    },
+    {
+      "id": "partial-stop",
+      "description": "Only worker4 is stopped while five peers remain healthy; tests selective repair overhead.",
+      "repetition": 1,
+      "seed": 0,
+      "arm_order": [
+        "naive",
+        "planner"
+      ],
+      "run_utc": "2026-08-05T13:38:57.604746+00:00",
+      "compose_file": "/Users/sriram/Other/github/BWSI CogWorks/DAG-based_docker_recovery/benchmarks/fixtures/partial_stop/compose.yaml",
+      "naive": {
+        "seconds": 1.003,
+        "success": true,
+        "return_code": 0,
+        "missing_at_end": [],
+        "errors": [],
+        "mutating_actions": 1,
+        "failed_actions": 0,
+        "safety_violation_suspected": false
+      },
+      "planner": {
+        "seconds": 1.071,
+        "success": true,
+        "return_code": 0,
+        "missing_at_end": [],
+        "errors": [],
+        "mutating_actions": 1,
+        "failed_actions": 0,
+        "safety_violation_suspected": false
+      }
+    },
+    {
+      "id": "missing-service",
+      "description": "One container is removed while two peers stay up; tests targeted reconciliation.",
+      "repetition": 1,
+      "seed": 0,
+      "arm_order": [
+        "naive",
+        "planner"
+      ],
+      "run_utc": "2026-08-05T13:39:45.567379+00:00",
+      "compose_file": "/Users/sriram/Other/github/BWSI CogWorks/DAG-based_docker_recovery/benchmarks/fixtures/missing_service/compose.yaml",
+      "naive": {
+        "seconds": 1.032,
+        "success": true,
+        "return_code": 0,
+        "missing_at_end": [],
+        "errors": [],
+        "mutating_actions": 1,
+        "failed_actions": 0,
+        "safety_violation_suspected": false
+      },
+      "planner": {
+        "seconds": 1.001,
+        "success": true,
+        "return_code": 0,
+        "missing_at_end": [],
+        "errors": [],
+        "mutating_actions": 1,
+        "failed_actions": 0,
+        "safety_violation_suspected": false
+      }
+    },
+    {
+      "id": "config-drift",
+      "description": "Processor is running from revision 1 while revision 2 is desired; tests config-hash detection.",
+      "repetition": 1,
+      "seed": 0,
+      "arm_order": [
+        "naive",
+        "planner"
+      ],
+      "run_utc": "2026-08-05T13:40:32.528097+00:00",
+      "compose_file": "/Users/sriram/Other/github/BWSI CogWorks/DAG-based_docker_recovery/benchmarks/fixtures/config_drift/compose-v2.yaml",
+      "naive": {
+        "seconds": 11.209,
+        "success": true,
+        "return_code": 0,
+        "missing_at_end": [],
+        "errors": [],
+        "mutating_actions": 1,
+        "failed_actions": 0,
+        "safety_violation_suspected": false
+      },
+      "planner": {
+        "seconds": 11.174,
+        "success": true,
+        "return_code": 0,
+        "missing_at_end": [],
+        "errors": [],
+        "mutating_actions": 1,
+        "failed_actions": 0,
+        "safety_violation_suspected": false
+      }
+    }
+  ],
+  "meta": {
+    "seed": 0,
+    "repetitions": 1,
+    "skip_codex": true,
+    "started_utc": "2026-08-05T13:31:39.917194+00:00",
+    "finished_utc": "2026-08-05T13:41:19.223414+00:00"
+  },
+  "summary": {
+    "n_runs": 7,
+    "arms": {
+      "codex": {
+        "success_rate": 0.0,
+        "n": 0,
+        "mean_seconds_success": null,
+        "mean_mutating_actions": null,
+        "safety_violations": 0
+      },
+      "naive": {
+        "success_rate": 1.0,
+        "n": 7,
+        "mean_seconds_success": 12.678,
+        "mean_mutating_actions": 2.286,
+        "safety_violations": 0
+      },
+      "planner": {
+        "success_rate": 1.0,
+        "n": 7,
+        "mean_seconds_success": 12.598,
+        "mean_mutating_actions": 2.0,
+        "safety_violations": 0
+      }
+    },
+    "by_scenario": {
+      "unhealthy": {
+        "codex": 0.0,
+        "naive": 1.0,
+        "planner": 1.0
+      },
+      "recreate-fallback": {
+        "codex": 0.0,
+        "naive": 1.0,
+        "planner": 1.0
+      },
+      "flaky-start": {
+        "codex": 0.0,
+        "naive": 1.0,
+        "planner": 1.0
+      },
+      "stopped-chain": {
+        "codex": 0.0,
+        "naive": 1.0,
+        "planner": 1.0
+      },
+      "partial-stop": {
+        "codex": 0.0,
+        "naive": 1.0,
+        "planner": 1.0
+      },
+      "missing-service": {
+        "codex": 0.0,
+        "naive": 1.0,
+        "planner": 1.0
+      },
+      "config-drift": {
+        "codex": 0.0,
+        "naive": 1.0,
+        "planner": 1.0
+      }
+    }
+  }
+}
