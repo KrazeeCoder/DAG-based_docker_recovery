@@ -1,4 +1,4 @@
-"""Read Docker and Compose state without mutating it."""
+"""Read Docker and Compose state without breaking it."""
 
 import json
 import math

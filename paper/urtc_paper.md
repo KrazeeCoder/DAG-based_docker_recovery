@@ -186,62 +186,58 @@ deep graph position from being overstated as semantic root cause.
 
 ## IV. Evaluation
 
-### A. Research questions
+### A. Methodology
 
-- **RQ1:** Does active probing identify the injected infrastructure failure class?
-- **RQ2:** Does diagnosis-guided repair restore supported failures with fewer
-  unnecessary mutations than reactive recovery?
-- **RQ3:** Does DockRepair abstain without exceeding its mutation budget on
-  unsupported failures?
-- **RQ4:** Do parameterized operators generalize to held-out names and topology?
+We ask four questions. Does active probing recover the injected infrastructure
+class (RQ1)? On supported faults, does diagnosis-guided repair restore the live
+contract, and at what mutation and time cost (RQ2)? On unsupported faults, does
+DockRepair abstain within a small mutation budget instead of thrashing (RQ3)? Do
+the same operators transfer to held-out names and topology (RQ4)?
 
-### B. Arms and scenarios
+**Arms.** Each trial runs one method against the same broken stack; arm order is
+shuffled per repetition. The primary suite is (1) `docker compose up -d --wait`,
+(2) reactive restart of visibly failed services and their declared dependents,
+(3) the original state-only DockRepair planner (`shallow`), and (4) full active
+diagnosis (`diagnostic`). A companion fifth arm runs the same faults through the
+`agy` tool-using agent (`gemini-3.6-flash-medium`). We treat the LLM as a cost and
+discipline foil, not as a substitute primary baseline: an agent with a shell can
+often patch many Docker faults eventually; we care whether DockRepair matches the
+useful outcomes with deterministic behavior, fewer mutations, and no model tokens.
 
-The benchmark randomizes four primary arms: (1) `docker compose up --wait`; (2)
-reactive restart of a visibly failed service and its declared dependents; (3) the
-original state-only DockRepair planner; and (4) full active-diagnosis DockRepair.
-An optional fifth companion arm runs the same opaque faults through an `agy` LLM
-agent with tool use, reporting tokens, wall-clock, and mutating commands for
-cost/latency contrast rather than as a substitute primary baseline.
+**Scenarios.** Twelve opaque dependency faults share one symptom—a declared TCP
+dependency is unusable or the caller stays unready—but differ in cause. Seven are
+supported repairs: stopped or missing target, caller or target network drift,
+recoverable closed listener, combined stop-plus-network, and a held-out Robot Shop
+cart→Redis stop. Five expect abstention: missing DNS alias after raw reconnect,
+wrong port, persistent closed listener, TCP-up application unreadiness, and
+repeated OOM. Injectors run outside the repair catalog. Arms see only the Compose
+file and live Docker state; Compose file-hash changes count as safety violations.
 
-All scenarios expose the same high-level condition: a declared TCP dependency is
-not usable or the caller remains unready. Repairable cases are stopped and missing
-targets, caller and target network drift, a recoverable closed listener, a combined
-stop-plus-network fault, and a held-out Robot Shop cart-to-Redis failure.
-Unsupported cases are missing DNS alias, wrong declared port, persistent closed
-listener, working TCP with failed application readiness, and repeated OOM
-termination. Fault injection remains outside production action rules.
+**Protocol and scoring.** For each scenario and each of ten repetitions (seed 3)
+we recreate the fault, run one arm, verify the live contract, check file hashes,
+then recreate before the next arm. Primary study: 12×4×10 = 480 timed arms on
+Colima Docker with a pre-pulled `busybox:1.36.1` probe image. LLM companion:
+12×10 = 120 `agy` trials on the same seed, logged separately. On supported faults,
+success is verified restore without file edits; for `diagnostic`/`agy` we also
+score whether the reported class matches the injection. On unsupported faults,
+success is safe abstention (not restored, mutations within a per-scenario budget
+of 0–2, and an explicit non-repair terminal—DockRepair status codes, or an
+`ABSTAINED` JSON claim for `agy`). Recreating a stack “green” on an abstention
+case is not counted as correct abstention. We record wall-clock, mutations,
+services touched, probes (`diagnostic`), safety violations, and for `agy` tokens,
+turns, and mutating shell commands from `stream-json` transcripts. After an
+alias-aware network-reconnect fix we refreshed only the target-network block under
+the same seed and merged those rows; the rest of the suite was left untouched.
 
-Each trial recreates an opaque fault, runs one arm, verifies the live contract and
-unchanged project files, then recreates the fault for the next arm. The paper
-protocol uses ten randomized repetitions per scenario. Ground truth is the injected
-fault class; the system sees only the Compose file and live environment.
+### B. Results
 
-### C. Metrics
+Primary suite aggregates are in `paper/dependency_results_summary.json` (raw:
+`benchmarks/results/dependency_bakeoff_results.json`). Compose hashes were
+unchanged in every trial; unit tests remained green (55/55).
 
-Primary metrics are fault-class accuracy, verified repair rate on supported faults,
-correct abstention on unsupported faults, unnecessary restarts/recreations, probe
-count, mutation count, recovery time, and safety violations. The LLM companion
-additionally reports input/output/total tokens, turns, and mutating shell commands
-parsed from agent transcripts. Rules are developed on one synthetic topology and
-evaluated on held-out service names/topology and combined faults.
-
-### D. Results
-
-We ran the locked protocol locally on Colima Docker: twelve scenarios, four
-symbolic arms, ten repetitions, seed 3, for 480 timed arms. After fixing Compose
-DNS alias restoration on network reconnect, we refreshed only the
-`dependency-target-network` block (same seed and repetition count) and merged it
-into the full result set. Raw trials are in
-`benchmarks/results/dependency_bakeoff_results.json`; aggregates are in
-`paper/dependency_results_summary.json`. Compose file hashes were unchanged in every
-trial (zero safety violations). Unit tests remained green (55/55).
-
-High accuracy on this suite is expected: faults are drawn from a finite,
-infrastructure-level hypothesis class that DockRepair enumerates explicitly. The
-scientific claim is therefore comparative, not absolute: which mechanisms restore
-or correctly refuse under opaque injection. Perfect in-scope accuracy without
-baseline contrast would be weak evidence; the contrasts below are the result.
+High accuracy on this suite is expected: faults come from a finite infrastructure
+class DockRepair enumerates. The claim is comparative—who restores or correctly
+refuses under opaque injection—not open-world coverage.
 
 **Diagnosis (RQ1).** On every diagnostic trial the injected class appeared in the
 report (`diagnosis_accuracy = 1.0` over 120 scenario-reps).

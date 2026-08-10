@@ -1,238 +1,63 @@
-# dockrepair
+# DockRepair
 
- It reads the current
-environment, searches for a low-cost sequence of symbolic actions, and can either
-print the plan or execute it. Execution re-inspects Docker after every action and
-finishes only when the goal is observed in the live environment.
+Symbolic planner for single-host Docker Compose repair. Observe live Docker and
+Compose state as facts, find a low-cost action sequence, and optionally execute
+it with re-observation after every step. Dependency mode adds active probes,
+declared TCP contracts, and abstention when a fault is outside the action
+catalog.
 
-## The entire implementation
+Requires Python 3.11+ and a working Docker/Compose engine. No extra Python packages.
 
-- `src/dockrepair_data.py` contains the data classes.
-- `src/dockrepair_docker.py` contains every Docker and Compose inspection call.
-- `src/dockrepair_planner.py` contains goals, actions, and repair-state search.
-- `src/dockrepair_graph.py` contains application dependency-graph analysis.
-- `src/dockrepair.py` contains execution and command-line output.
+## Install
 
-The collector reads normalized Compose configuration plus live containers,
-networks, volumes, mounts, ports, health, and runtime status. It converts that
-snapshot into symbolic facts. The planner uses lexicographic uniform-cost search
-over a finite state-transition graph whose parameterized actions can add and
-remove facts. A `heapq` selects the safest cheapest unfinished state and a
-dictionary prevents costly cycles and duplicate paths.
-
-To follow the main control flow, start at `main()` near the bottom of
-`src/dockrepair.py`. Planning mode follows this path:
-
-```text
-main() -> collect_environment() -> search() -> print_plan()
+```bash
+pip install -e .
+# or
+export PYTHONPATH=src
 ```
 
-Execution mode calls `execute_until_resolved()`, which repeatedly runs
-`search()`, executes only the first planned action, inspects Docker again, and
-replans from the newly observed state.
+## Use
 
-The action catalog contains competing repair paths:
+```bash
+# Plan only
+python3 -m dockrepair path/to/compose.yaml
 
-- Reconcile several broken services together, or repair them individually in
-  dependency order.
-- Restart an unhealthy container, or force-recreate it at higher cost.
-- Create missing project networks or named volumes and restore attachments.
-- Refuse repairs blocked by missing bind paths, external resources, or foreign
-  port conflicts.
-- Reject an action when its predicted effect is not observed, then replan.
+# Plan and execute
+python3 -m dockrepair path/to/compose.yaml --execute
 
-During execution, command failure or bounded health/readiness verification
-failure removes that action edge for the exact observed state. The environment
-is collected again and graph search finds the cheapest remaining path instead
-of aborting the entire repair.
-
-## Compose completion and replica semantics
-
-DockRepair distinguishes all three Compose dependency conditions. A
-`service_started` dependency requires `running:<service>`, `service_healthy`
-requires `healthy:<service>`, and `service_completed_successfully` requires
-`completed_successfully:<service>`. A service used as a successful-completion
-dependency is modeled as a one-shot job: running produces
-`completion_pending`, exit code zero produces `completed_successfully`, and a
-nonzero exit produces `completion_failed`. The planner runs or reruns the job,
-observes its exit, and unlocks dependents only after exit code zero is observed.
-Health and readiness are not terminal goals for a one-shot job.
-
-The current planning domain intentionally supports exactly one container per
-Compose service. A declared `scale` or `deploy.replicas` value other than one,
-or multiple observed containers for one service, produces a precise safe
-refusal. This prevents a single inspected replica from hiding an unhealthy or
-missing peer.
-
-## Safety policy and repair cost
-
-Every candidate edge passes a deny-by-default validator before graph search.
-Only cataloged, project-scoped Compose operations, declared resource creation,
-declared network attachment, observation, and local engine startup are
-admissible. The catalog contains no volume/network deletion, foreign-container
-mutation, foreign-port eviction, or file-edit operation. Missing external
-resources and occupied ports remain hard blockers rather than high-cost fixes.
-
-Plans minimize the following vector lexicographically:
-
-```text
-(data-risk, destructiveness, disruption, actions)
+# Declared dependency diagnosis / repair
+python3 -m dockrepair path/to/compose.yaml --dependency
 ```
 
-The first dimension counts possible loss of an existing container's writable
-layer, the second ranks mutation invasiveness, the third counts interruption of
-running services, and the fourth counts planner edges including observations.
-These are explicit policy priorities, not wall-clock latency estimates. A plan
-with lower data risk always wins even when it contains more actions.
+## Tests
 
-## Terminal certificates
-
-Read-only planning prints a `PLAN CERTIFICATE` containing observed and missing
-goal facts, the objective and total cost vector, safety-policy results, and each
-action's command, preconditions, effects, and safety evidence. These effects are
-clearly labeled as predictions. Execution prints a compact certificate before
-each selected edge and finishes with a `RESOLUTION CERTIFICATE` reporting the
-freshly observed goal state, attempted/succeeded/rejected action counts, and
-accumulated cost. Certificates are terminal-only and are not persisted.
-
-Published-port facts require the observed target port, published port, protocol,
-and host-IP scope to match the Compose declaration. Wildcard and specific IPv4
-or IPv6 bindings remain distinct, and conflict detection uses the same host
-scope semantics.
-
-## Optional application readiness
-
-A service can declare an HTTP, HTTPS, or TCP readiness probe with Compose
-labels. When configured, `endpoint_ready:<service>` becomes part of the
-symbolic goal instead of treating a merely running container as sufficient:
-
-```yaml
-services:
-  app:
-    labels:
-      com.dockrepair.readiness.url: "http://localhost:8080/ready"
-      com.dockrepair.readiness.statuses: "200-399"
-      com.dockrepair.readiness.timeout: "2"
+```bash
+PYTHONPATH=src python3 -m unittest discover -s tests
 ```
 
-Only the URL is required. HTTP status codes default to `200-399`; TCP probes use
-a URL such as `tcp://localhost:6884`. The per-probe timeout bounds one attempt,
-while `--health-timeout` bounds polling for both Docker health and application
-readiness. A failed readiness observation makes restart and then recreation
-available as fallback paths.
+## Evaluation
 
-## Active service-dependency diagnosis
+Opaque dependency-fault bakeoff (Compose up, reactive restart, shallow planner,
+full diagnosis):
 
-A caller can declare a TCP contract to another Compose service:
-
-```yaml
-services:
-  api:
-    labels:
-      com.dockrepair.contract.primary-db: "tcp://database:5432"
-  database:
-    labels:
-      com.dockrepair.repair.recreate: "true"
+```bash
+PYTHONPATH=src python3 benchmarks/dependency_bakeoff.py --fresh --repetitions 10 --seed 3
 ```
 
-The URL must be `tcp://DECLARED_SERVICE:PORT`, and caller and target must share a
-declared Compose network. `com.dockrepair.contract-timeout` optionally sets the
-caller's probe timeout. Recreation requires the target's explicit
-`com.dockrepair.repair.recreate=true` label.
+Optional LLM arm (`agy`):
 
-DockRepair checks lifecycle and declared network attachments before running
-bounded DNS, caller-to-target TCP, and target-local listener probes. It uses a
-locally available BusyBox image in an ephemeral, read-only, resource-limited
-container with no mounts and no capabilities. It never pulls this image itself:
-
-```powershell
-docker pull busybox:1.36.1
-$env:PYTHONPATH = "src"
-py -3.11 -m dockrepair -f .\compose.yaml --probe-image busybox:1.36.1
+```bash
+PYTHONPATH=src python3 benchmarks/dependency_bakeoff.py --agy-only --fresh --repetitions 10 --seed 3
 ```
 
-Add `--execute` for bounded repair and `--report-json .\incident.json` for a
-structured report. Dependency mode can start/reconcile unavailable services,
-restore declared network attachments, restart a proven closed listener once,
-create a missing project-owned declared network, and perform one opt-in recreation.
-DNS/path faults and failures beyond a working
-TCP connection are reported without mutation.
+Fixtures live under `benchmarks/fixtures/`. Aggregates used in the paper are under
+`paper/`. See `benchmarks/README.md` for protocol details.
 
-### Graph-aware cascade diagnosis
+## Paper
 
-Contracts form a directed graph: `caller -> required target`. DockRepair first
-diagnoses every failed edge, separates unrelated connected failures, and collapses
-dependency cycles. In an acyclic cascade such as `website -> api -> database`, it
-prioritizes the deepest failed dependency. It will not restart `api` merely because
-that action is available while `api -> database` is still failed.
+MIT URTC manuscript and figures:
 
-After the selected repair, DockRepair probes every edge in the affected group. If
-an upstream edge recovers without either of its services being modified, the JSON
-report records that the intervention *supports* the cascade explanation. It does
-not describe graph position alone as proof of root cause. Report statements are
-separated into observed, inferred, confirmed, and unresolved findings.
-
-For a failed cycle, DockRepair acts only when exactly one service has a proven safe
-repair. Multiple plausible repair locations cause abstention. Independent failed
-subgraphs remain separate cascade incidents.
-
-The controlled three-service fixture demonstrates this behavior:
-
-```powershell
-docker compose -f .\benchmarks\fixtures\dependency_chain\compose.yaml up -d
-docker exec dockrepair-dependency-chain-database-1 killall httpd
-Start-Sleep -Seconds 2
-$env:PYTHONPATH = "src"
-py -3.11 -m dockrepair -f .\benchmarks\fixtures\dependency_chain\compose.yaml `
-  --execute --report-json .\chain-incident.json
-```
-
-Only `database` should be restarted. Recovery of `api -> database` is direct;
-recovery of `website -> api` without modifying either service is intervention
-evidence supporting the graph explanation.
-
-## Run it
-
-```powershell
-$env:PYTHONPATH = "src"
-py -3.11 -m dockrepair -f .\live_fixture\compose.yaml
-```
-
-Actually repair the environment:
-
-```powershell
-$env:PYTHONPATH = "src"
-py -3.11 -m dockrepair -f .\live_fixture\compose.yaml --execute
-```
-
-Use a shorter health fallback window when testing alternative paths:
-
-```powershell
-py -3.11 -m dockrepair -f .\live_fixture\compose.yaml --execute --health-timeout 5
-```
-
-The included live fixture has two services. `app` depends on a healthy
-`prerequisite`. When both are stopped, the lower-cost batch edge is:
-
-```text
-1. Reconcile services together: app, prerequisite
-```
-
-Action effects remain planner predictions. In execution mode the tool runs one
-action, inspects Docker, and replans from the observed state. Health-check actions
-poll live container state instead of assuming that a printed check succeeded.
-
-## Recreate the broken fixture
-
-These commands really change Docker state:
-
-```powershell
-docker compose -f .\live_fixture\compose.yaml up -d --wait
-docker compose -f .\live_fixture\compose.yaml stop app prerequisite
-```
-
-Remove only this fixture with:
-
-```powershell
-docker compose -f .\live_fixture\compose.yaml down
-```
+- PDF: `paper/submissions/DockRepair_MIT_URTC.pdf`
+- Source notes: `paper/urtc_paper.md`
+- Figures: `paper/figures/`
+- Result summaries: `paper/results_summary.json`

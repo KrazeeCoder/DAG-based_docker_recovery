@@ -1,7 +1,4 @@
-"""Active, bounded diagnosis and minimal repair for declared TCP dependencies."""
-
 from __future__ import annotations
-
 import json
 import math
 import subprocess

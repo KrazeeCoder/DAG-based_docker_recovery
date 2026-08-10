@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "dockrepair"
 version = "0.1.0"
-description = "A deterministic symbolic planner for Docker Compose repair plans"
+description = "Deterministic symbolic planner for Docker Compose repair"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -17,4 +17,12 @@ dockrepair = "dockrepair:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
-py-modules = ["dockrepair", "dockrepair_data", "dockrepair_diagnosis", "dockrepair_docker", "dockrepair_graph", "dockrepair_planner"]
+py-modules = [
+  "dockrepair",
+  "dockrepair_data",
+  "dockrepair_diagnosis",
+  "dockrepair_docker",
+  "dockrepair_graph",
+  "dockrepair_planner",
+  "dockrepair_planner_naive",
+]

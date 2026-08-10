@@ -1,9 +1,4 @@
-"""Deterministic graph analysis for dependency incidents.
-
-Edges point from a caller to the service it requires.  The module reasons only
-from declared contracts and direct diagnoses; graph position is never treated
-as proof of application-level causation.
-"""
+"""Dependency-graph grouping and intervention checks for contract failures."""
 
 from __future__ import annotations
 

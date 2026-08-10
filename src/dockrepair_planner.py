@@ -1,4 +1,4 @@
-"""Build deterministic Docker repair operators and search for a cheapest plan."""
+"""Build deterministic Docker repair operators and find the cheapest + best plan."""
 
 import heapq
 from dataclasses import replace
